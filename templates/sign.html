@@ -50,6 +50,41 @@
         </button>
     </div>
 
+    <!-- Extracted Document Details Banner (Feature 2) -->
+    {% if metadata and (metadata.employee_name or metadata.hardware) %}
+    <div class="bg-gradient-to-r from-sky-950/60 to-slate-900 border border-sky-500/30 rounded-2xl p-3.5 shadow-md space-y-2">
+        <div class="flex items-center justify-between text-xs text-sky-300 font-bold">
+            <span class="flex items-center gap-1.5">
+                <i data-lucide="sparkles" class="w-3.5 h-3.5 text-sky-400"></i>
+                Auto-Extracted Handover Details
+            </span>
+            {% if metadata.date %}
+            <span class="text-[11px] font-mono text-slate-400">{{ metadata.date }}</span>
+            {% endif %}
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+            {% if metadata.employee_name %}
+            <div class="flex items-center gap-2 bg-slate-900/60 p-2 rounded-lg border border-slate-800">
+                <i data-lucide="user" class="w-3.5 h-3.5 text-sky-400 flex-shrink-0"></i>
+                <div class="truncate">
+                    <span class="text-[10px] text-slate-500 uppercase block leading-none">Employee</span>
+                    <span class="font-semibold text-white">{{ metadata.employee_name }}</span>
+                </div>
+            </div>
+            {% endif %}
+            {% if metadata.hardware %}
+            <div class="flex items-center gap-2 bg-slate-900/60 p-2 rounded-lg border border-slate-800">
+                <i data-lucide="smartphone" class="w-3.5 h-3.5 text-indigo-400 flex-shrink-0"></i>
+                <div class="truncate">
+                    <span class="text-[10px] text-slate-500 uppercase block leading-none">Assigned Hardware</span>
+                    <span class="font-semibold text-white truncate block" title="{{ metadata.hardware[0] }}">{{ metadata.hardware[0] }}</span>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+
     <!-- Document Thumbnail Preview Panel (Collapsible) -->
     <div id="docPreviewSection" class="hidden bg-slate-800/90 border border-slate-700 rounded-2xl p-4 shadow-xl space-y-3">
         <div class="flex items-center justify-between text-xs text-slate-300 border-b border-slate-700 pb-2">
@@ -72,13 +107,28 @@
 
     <!-- Signature Pad Card -->
     <div class="bg-slate-800 border border-slate-700 rounded-2xl p-4 sm:p-5 shadow-xl space-y-4">
-        <div class="flex items-center justify-between flex-wrap gap-2">
+        <!-- Dual Signature Role Selector (Feature 3) -->
+        <div>
+            <label class="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1.5">Signing As:</label>
+            <div class="flex bg-slate-900 p-1 rounded-xl border border-slate-700">
+                <button id="roleBtnRecip" type="button" onclick="setSignRole('recipient')" class="flex-1 py-2 rounded-lg text-xs font-bold bg-sky-600 text-white transition flex items-center justify-center gap-1.5 shadow">
+                    <i data-lucide="user-check" class="w-3.5 h-3.5"></i>
+                    Recipient / Employee
+                </button>
+                <button id="roleBtnIssuer" type="button" onclick="setSignRole('issuer')" class="flex-1 py-2 rounded-lg text-xs font-bold text-slate-400 hover:text-white transition flex items-center justify-center gap-1.5">
+                    <i data-lucide="briefcase" class="w-3.5 h-3.5"></i>
+                    IT Admin / Issuer
+                </button>
+            </div>
+        </div>
+
+        <div class="flex items-center justify-between flex-wrap gap-2 pt-1">
             <div>
-                <h3 class="text-sm sm:text-base font-bold text-white flex items-center gap-2">
+                <h3 id="signHeading" class="text-sm sm:text-base font-bold text-white flex items-center gap-2">
                     <i data-lucide="pen-tool" class="w-4 h-4 text-sky-400"></i>
-                    Sign in the Box Below
+                    Employee Signature (Right Box)
                 </h3>
-                <p class="text-xs text-slate-400">Draw with your finger or stylus inside the designated area.</p>
+                <p class="text-xs text-slate-400">Draw with your finger or stylus inside the box.</p>
             </div>
 
             <!-- Ink Color Options -->
@@ -93,8 +143,8 @@
         <div class="signature-wrapper relative rounded-xl border-2 border-sky-500/40 focus-within:border-sky-400 shadow-inner overflow-hidden">
             <!-- Guidelines watermark / signature line -->
             <div class="absolute bottom-6 inset-x-8 border-b border-dashed border-slate-300 pointer-events-none flex justify-between items-center text-[11px] font-mono text-slate-400 select-none pb-1 z-0">
-                <span>✕ Sign above line</span>
-                <span>IT Handover Confirmation</span>
+                <span id="signWatermarkLeft">✕ Sign above line</span>
+                <span id="signWatermarkRight">Recipient Confirmation</span>
             </div>
 
             <canvas id="signatureCanvas" class="w-full relative z-10 block cursor-crosshair"></canvas>
@@ -115,13 +165,16 @@
             </span>
         </div>
 
-        <!-- Optional Signer Info -->
+        <!-- Signer Info (Pre-filled via Feature 2) -->
         <div class="pt-2 border-t border-slate-700/60 space-y-3">
             <div>
                 <label class="block text-xs font-semibold text-slate-300 mb-1" for="signerName">
-                    Signer / Employee Full Name <span class="text-slate-500 font-normal">(Optional)</span>
+                    <span id="signerLabel">Signer / Employee Full Name</span>
                 </label>
-                <input type="text" id="signerName" placeholder="e.g., Jacob Kuchar" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:ring-2 focus:ring-sky-500 focus:outline-none transition">
+                <input type="text" id="signerName" 
+                       value="{{ metadata.employee_name if metadata and metadata.employee_name else '' }}" 
+                       placeholder="e.g. Michal Páleník" 
+                       class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:ring-2 focus:ring-sky-500 focus:outline-none transition">
             </div>
         </div>
 
@@ -148,11 +201,13 @@
 <script>
 const currentFilename = {{ filename | tojson }};
 const totalPages = {{ page_count }};
+const docMetadata = {{ metadata | tojson if metadata else '{}' }};
 let currentPreviewPage = 1;
 let signaturePad = null;
 let currentInkColor = '#0f2b5c';
 let isDrawingFallback = false;
 let fallbackHasStrokes = false;
+let currentSignRole = 'recipient'; // 'recipient' or 'issuer'
 
 document.addEventListener('DOMContentLoaded', () => {
     initSignaturePad();
@@ -165,6 +220,36 @@ let resizeTimer = null;
 function debounceResize() {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(resizeCanvas, 100);
+}
+
+function setSignRole(role) {
+    currentSignRole = role;
+    const btnR = document.getElementById('roleBtnRecip');
+    const btnI = document.getElementById('roleBtnIssuer');
+    const heading = document.getElementById('signHeading');
+    const label = document.getElementById('signerLabel');
+    const input = document.getElementById('signerName');
+    const wmRight = document.getElementById('signWatermarkRight');
+
+    if (role === 'recipient') {
+        btnR.className = 'flex-1 py-2 rounded-lg text-xs font-bold bg-sky-600 text-white transition flex items-center justify-center gap-1.5 shadow';
+        btnI.className = 'flex-1 py-2 rounded-lg text-xs font-bold text-slate-400 hover:text-white transition flex items-center justify-center gap-1.5';
+        heading.innerHTML = '<i data-lucide="pen-tool" class="w-4 h-4 text-sky-400"></i> Employee Signature (Right Box)';
+        label.textContent = 'Recipient / Employee Full Name';
+        wmRight.textContent = 'Recipient Confirmation';
+        input.value = docMetadata.employee_name || '';
+        input.placeholder = 'e.g. Michal Páleník';
+    } else {
+        btnI.className = 'flex-1 py-2 rounded-lg text-xs font-bold bg-indigo-600 text-white transition flex items-center justify-center gap-1.5 shadow';
+        btnR.className = 'flex-1 py-2 rounded-lg text-xs font-bold text-slate-400 hover:text-white transition flex items-center justify-center gap-1.5';
+        heading.innerHTML = '<i data-lucide="pen-tool" class="w-4 h-4 text-indigo-400"></i> IT Admin Signature (Left Box)';
+        label.textContent = 'IT Admin / Issuer Full Name';
+        wmRight.textContent = 'IT Issuer Confirmation';
+        input.value = docMetadata.issuer_name || 'IT Support Team';
+        input.placeholder = 'e.g. Alex Ray / IT Support';
+    }
+
+    if (window.lucide) lucide.createIcons();
 }
 
 function initSignaturePad() {
@@ -254,11 +339,10 @@ function resizeCanvas() {
 
     const rect = canvas.getBoundingClientRect();
     const width = rect.width || canvas.offsetWidth || 400;
-    const height = 240; // fixed responsive height
+    const height = 240;
 
     const ratio = Math.max(window.devicePixelRatio || 1, 1);
     
-    // Save existing strokes if signaturePad is active
     let data = null;
     if (signaturePad) {
         data = signaturePad.toData();
@@ -365,7 +449,7 @@ async function saveAndSubmitSignature() {
 
     statusMsg.classList.remove('hidden', 'text-rose-400', 'text-emerald-400');
     statusMsg.classList.add('text-sky-400');
-    statusMsg.textContent = 'Uploading signature and generating signed PDF...';
+    statusMsg.textContent = 'Uploading signature and overlaying onto PDF...';
 
     // Get PNG signature data URL
     const signatureDataUrl = signaturePad ? signaturePad.toDataURL('image/png') : canvas.toDataURL('image/png');
@@ -378,6 +462,7 @@ async function saveAndSubmitSignature() {
             },
             body: JSON.stringify({
                 signature: signatureDataUrl,
+                role: currentSignRole,
                 signer_name: signerName
             })
         });

@@ -20,7 +20,7 @@
     <!-- Search input -->
     <div class="relative">
         <i data-lucide="search" class="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2"></i>
-        <input type="text" id="mobSearchInput" oninput="filterMobileDocs()" placeholder="Search documents..." class="w-full bg-slate-800 border border-slate-700 rounded-xl pl-9 pr-3 py-2 text-xs text-white placeholder-slate-500 focus:ring-2 focus:ring-sky-500 focus:outline-none">
+        <input type="text" id="mobSearchInput" oninput="filterMobileDocs()" placeholder="Search by name, device, or filename..." class="w-full bg-slate-800 border border-slate-700 rounded-xl pl-9 pr-3 py-2 text-xs text-white placeholder-slate-500 focus:ring-2 focus:ring-sky-500 focus:outline-none">
     </div>
 
     <!-- Tab Selector -->
@@ -82,7 +82,9 @@ function filterMobileDocs() {
 
     const filterFn = f => {
         if (!mobSearchQuery) return true;
-        return f.name.toLowerCase().includes(mobSearchQuery) || f.modified_formatted.toLowerCase().includes(mobSearchQuery);
+        const metaStr = f.metadata ? `${f.metadata.employee_name || ''} ${f.metadata.email || ''} ${(f.metadata.hardware || []).join(' ')}` : '';
+        const full = `${f.name} ${f.modified_formatted} ${metaStr}`.toLowerCase();
+        return full.includes(mobSearchQuery);
     };
 
     renderPending(pendingFiles.filter(filterFn));
@@ -105,7 +107,12 @@ function renderPending(files) {
         return;
     }
 
-    container.innerHTML = files.map(file => `
+    container.innerHTML = files.map(file => {
+        const meta = file.metadata || {};
+        const employeeName = meta.employee_name;
+        const hwFirst = meta.hardware && meta.hardware.length > 0 ? meta.hardware[0] : null;
+
+        return `
         <div class="bg-slate-800 border border-slate-700 rounded-2xl p-4 shadow-md flex flex-col gap-3">
             <div class="flex items-start gap-3">
                 <div class="w-16 h-20 bg-slate-900 rounded-lg overflow-hidden border border-slate-700/80 flex-shrink-0 relative">
@@ -117,9 +124,20 @@ function renderPending(files) {
                     <p class="text-xs text-slate-400 mt-0.5 flex items-center gap-1">
                         <i data-lucide="calendar" class="w-3 h-3 text-slate-500"></i> ${file.modified_formatted}
                     </p>
-                    <span class="inline-block mt-2 px-2 py-0.5 rounded bg-sky-500/10 text-sky-400 text-[10px] font-semibold uppercase tracking-wider">
-                        ${file.size_formatted}
-                    </span>
+
+                    <!-- Extracted Metadata -->
+                    <div class="mt-1 flex flex-wrap gap-1">
+                        ${employeeName ? `
+                            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-sky-500/20 text-sky-300 text-[10px] font-semibold border border-sky-500/30 truncate max-w-full">
+                                <i data-lucide="user" class="w-2.5 h-2.5"></i> ${employeeName}
+                            </span>
+                        ` : ''}
+                        ${hwFirst ? `
+                            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 text-[10px] font-medium border border-indigo-500/30 truncate max-w-full" title="${hwFirst}">
+                                <i data-lucide="smartphone" class="w-2.5 h-2.5"></i> ${hwFirst.split('//')[0].trim()}
+                            </span>
+                        ` : ''}
+                    </div>
                 </div>
             </div>
             <a href="/sign/${encodeURIComponent(file.name)}" class="w-full py-3 bg-gradient-to-r from-sky-600 to-indigo-600 hover:from-sky-500 hover:to-indigo-500 text-white rounded-xl text-sm font-bold tracking-wide shadow-lg shadow-sky-600/30 flex items-center justify-center gap-2 transition active:scale-[0.98]">
@@ -127,7 +145,8 @@ function renderPending(files) {
                 Sign Document Now
             </a>
         </div>
-    `).join('');
+        `;
+    }).join('');
 
     if (window.lucide) lucide.createIcons();
 }
@@ -145,7 +164,11 @@ function renderSigned(files) {
         return;
     }
 
-    container.innerHTML = files.map(file => `
+    container.innerHTML = files.map(file => {
+        const meta = file.metadata || {};
+        const employeeName = meta.employee_name;
+
+        return `
         <div class="bg-slate-800 border border-slate-700 rounded-2xl p-3.5 shadow-md flex items-center justify-between gap-3">
             <div class="flex items-center gap-3 min-w-0">
                 <div class="w-12 h-16 bg-slate-900 rounded-lg overflow-hidden border border-emerald-500/30 flex-shrink-0">
@@ -154,7 +177,10 @@ function renderSigned(files) {
                 <div class="min-w-0">
                     <h4 class="text-xs font-bold text-white truncate">${file.name}</h4>
                     <p class="text-[10px] text-slate-400">${file.modified_formatted}</p>
-                    <span class="text-[10px] text-emerald-400 font-semibold flex items-center gap-1 mt-1">
+                    ${employeeName ? `
+                        <span class="text-[10px] text-sky-400 font-medium block truncate">👤 ${employeeName}</span>
+                    ` : ''}
+                    <span class="text-[10px] text-emerald-400 font-semibold flex items-center gap-1 mt-0.5">
                         <i data-lucide="check" class="w-3 h-3"></i> Signed
                     </span>
                 </div>
@@ -168,7 +194,8 @@ function renderSigned(files) {
                 </button>
             </div>
         </div>
-    `).join('');
+        `;
+    }).join('');
 
     if (window.lucide) lucide.createIcons();
 }
