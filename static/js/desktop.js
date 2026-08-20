@@ -7,14 +7,16 @@ let currentPort = 5000;
 let pendingFiles = [];
 let signedFiles = [];
 let currentDocQrUrl = '';
+let searchTerm = '';
+let sortMode = 'date_desc';
 
 document.addEventListener('DOMContentLoaded', () => {
     initNetworkControls();
     initDropZone();
     refreshDocuments();
     
-    // Auto-refresh document list every 5 seconds to catch phone signature completions
-    setInterval(refreshDocuments, 4000);
+    // Auto-refresh document list every 5 seconds
+    setInterval(refreshDocuments, 5000);
 });
 
 function getBaseUrl() {
@@ -87,11 +89,40 @@ async function refreshDocuments() {
         document.getElementById('pendingCountBadge').textContent = `${pendingFiles.length} file${pendingFiles.length === 1 ? '' : 's'}`;
         document.getElementById('signedCountBadge').textContent = `${signedFiles.length} file${signedFiles.length === 1 ? '' : 's'}`;
 
-        renderPendingGrid(pendingFiles);
-        renderSignedGrid(signedFiles);
+        sortAndRenderDocuments();
     } catch (err) {
         console.error('Failed to load documents:', err);
     }
+}
+
+function filterDocuments() {
+    const input = document.getElementById('docSearchInput');
+    searchTerm = input ? input.value.trim().toLowerCase() : '';
+    sortAndRenderDocuments();
+}
+
+function sortAndRenderDocuments() {
+    const sortSelect = document.getElementById('docSortSelect');
+    sortMode = sortSelect ? sortSelect.value : 'date_desc';
+
+    function sortFiles(list) {
+        let filtered = list.filter(f => {
+            if (!searchTerm) return true;
+            return f.name.toLowerCase().includes(searchTerm) || f.modified_formatted.toLowerCase().includes(searchTerm);
+        });
+
+        filtered.sort((a, b) => {
+            if (sortMode === 'date_desc') return b.modified_timestamp - a.modified_timestamp;
+            if (sortMode === 'date_asc') return a.modified_timestamp - b.modified_timestamp;
+            if (sortMode === 'name_asc') return a.name.localeCompare(b.name);
+            if (sortMode === 'size_desc') return b.size_bytes - a.size_bytes;
+            return 0;
+        });
+        return filtered;
+    }
+
+    renderPendingGrid(sortFiles(pendingFiles));
+    renderSignedGrid(sortFiles(signedFiles));
 }
 
 function renderPendingGrid(files) {
@@ -100,8 +131,8 @@ function renderPendingGrid(files) {
         container.innerHTML = `
             <div class="col-span-full bg-slate-800/40 border border-slate-700/60 rounded-2xl p-8 text-center space-y-2">
                 <i data-lucide="folder-open" class="w-8 h-8 mx-auto text-slate-500"></i>
-                <h4 class="text-sm font-semibold text-slate-300">No pending files</h4>
-                <p class="text-xs text-slate-500">Drag and drop a PDF file above or copy into <code class="text-sky-400 font-mono">./pending</code></p>
+                <h4 class="text-sm font-semibold text-slate-300">${searchTerm ? 'No matching pending files' : 'No pending files'}</h4>
+                <p class="text-xs text-slate-500">${searchTerm ? 'Try adjusting your search query.' : 'Drag and drop a PDF file above or place it into the pending folder.'}</p>
             </div>
         `;
         if (window.lucide) lucide.createIcons();
@@ -137,7 +168,7 @@ function renderPendingGrid(files) {
             </div>
 
             <!-- Action buttons -->
-            <div class="pt-2 border-t border-slate-700/60 flex items-center gap-2">
+            <div class="pt-2 border-t border-slate-700/60 flex items-center gap-1.5">
                 <button onclick="showDocQr('${file.name}', '${directSignUrl}')" class="flex-1 py-1.5 bg-sky-600/20 hover:bg-sky-600/30 text-sky-400 border border-sky-500/30 rounded-lg text-xs font-medium transition flex items-center justify-center gap-1">
                     <i data-lucide="qr-code" class="w-3.5 h-3.5"></i> Direct QR
                 </button>
@@ -147,6 +178,9 @@ function renderPendingGrid(files) {
                 <a href="${file.download_url}" target="_blank" class="p-1.5 bg-slate-700/70 hover:bg-slate-700 text-slate-300 rounded-lg text-xs transition" title="Download original">
                     <i data-lucide="download" class="w-3.5 h-3.5"></i>
                 </a>
+                <button onclick="deleteDocument('pending', '${file.name}')" class="p-1.5 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 rounded-lg text-xs transition" title="Delete file">
+                    <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                </button>
             </div>
         </div>
         `;
@@ -161,8 +195,8 @@ function renderSignedGrid(files) {
         container.innerHTML = `
             <div class="col-span-full bg-slate-800/40 border border-slate-700/60 rounded-2xl p-8 text-center space-y-2">
                 <i data-lucide="check-circle" class="w-8 h-8 mx-auto text-slate-500"></i>
-                <h4 class="text-sm font-semibold text-slate-300">No signed documents yet</h4>
-                <p class="text-xs text-slate-500">Signed PDFs with embedded signatures will automatically appear here.</p>
+                <h4 class="text-sm font-semibold text-slate-300">${searchTerm ? 'No matching signed documents' : 'No signed documents yet'}</h4>
+                <p class="text-xs text-slate-500">${searchTerm ? 'Try adjusting your search query.' : 'Signed PDFs with embedded signatures will automatically appear here.'}</p>
             </div>
         `;
         if (window.lucide) lucide.createIcons();
@@ -194,15 +228,65 @@ function renderSignedGrid(files) {
             </div>
 
             <!-- Action buttons -->
-            <div class="pt-2 border-t border-slate-700/60 flex items-center gap-2">
-                <a href="${file.download_url}" target="_blank" class="w-full py-1.5 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1.5">
-                    <i data-lucide="download" class="w-3.5 h-3.5"></i> Download Signed PDF
+            <div class="pt-2 border-t border-slate-700/60 flex items-center gap-1.5">
+                <a href="${file.download_url}" target="_blank" class="flex-1 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1.5">
+                    <i data-lucide="download" class="w-3.5 h-3.5"></i> Download PDF
                 </a>
+                <button onclick="openPdfPreview('signed', '${file.name}', '${file.last_page_preview_url || file.preview_url}')" class="p-1.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-xs transition" title="Preview document">
+                    <i data-lucide="eye" class="w-3.5 h-3.5"></i>
+                </button>
+                <button onclick="deleteDocument('signed', '${file.name}')" class="p-1.5 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 rounded-lg text-xs transition" title="Remove signed document">
+                    <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                </button>
             </div>
         </div>
     `).join('');
 
     if (window.lucide) lucide.createIcons();
+}
+
+async function deleteDocument(folder, filename) {
+    if (!confirm(`Are you sure you want to remove "${filename}"?`)) {
+        return;
+    }
+
+    try {
+        const res = await fetch(`/api/delete/${folder}/${encodeURIComponent(filename)}`, {
+            method: 'POST'
+        });
+        const data = await res.json();
+        if (data.success) {
+            refreshDocuments();
+        } else {
+            alert(`Error deleting document: ${data.error}`);
+        }
+    } catch (err) {
+        alert(`Failed to delete document: ${err.message}`);
+    }
+}
+
+async function clearAllSignedDocs() {
+    if (!confirm('Are you sure you want to remove ALL completed signed documents from the view?')) {
+        return;
+    }
+
+    try {
+        const res = await fetch('/api/clear/signed', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+            refreshDocuments();
+        } else {
+            alert(`Error: ${data.error}`);
+        }
+    } catch (err) {
+        alert(`Failed to clear signed documents: ${err.message}`);
+    }
+}
+
+function setOneDrivePreset() {
+    const defaultOneDrive = 'C:/Users/v-jkuchar/OneDrive - Nokian Tyres/IT_Handover';
+    document.getElementById('setting_pending_dir').value = `${defaultOneDrive}/pending`;
+    document.getElementById('setting_signed_dir').value = `${defaultOneDrive}/signed`;
 }
 
 function initDropZone() {
@@ -322,6 +406,8 @@ async function openSettingsModal() {
         document.getElementById('setting_w').value = placement.width || 210;
         document.getElementById('setting_h').value = placement.height || 70;
         document.getElementById('setting_public_url').value = config.public_url || '';
+        document.getElementById('setting_pending_dir').value = config.pending_dir || 'pending';
+        document.getElementById('setting_signed_dir').value = config.signed_dir || 'signed';
         document.getElementById('setting_timestamp').checked = placement.add_timestamp !== false;
         document.getElementById('setting_archive').checked = config.auto_archive_pending !== false;
 
@@ -342,8 +428,13 @@ function closeSettingsModal() {
 async function saveSettings(e) {
     e.preventDefault();
     const pubUrl = document.getElementById('setting_public_url').value.trim();
+    const pendingDir = document.getElementById('setting_pending_dir').value.trim();
+    const signedDir = document.getElementById('setting_signed_dir').value.trim();
+
     const payload = {
         public_url: pubUrl,
+        pending_dir: pendingDir || 'pending',
+        signed_dir: signedDir || 'signed',
         signature_placement: {
             page: -1,
             x: parseFloat(document.getElementById('setting_x').value) || 320,
@@ -372,8 +463,8 @@ async function saveSettings(e) {
             if (pubUrl) {
                 currentIp = pubUrl;
                 updateHeroQr();
-                renderPendingGrid(pendingFiles);
             }
+            refreshDocuments();
         }
     } catch (err) {
         alert(`Failed to save settings: ${err.message}`);
