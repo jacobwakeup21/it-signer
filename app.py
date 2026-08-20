@@ -1,6 +1,7 @@
 import os
 import sys
 import io
+import re
 import json
 import base64
 import socket
@@ -27,17 +28,28 @@ DEFAULT_CONFIG = {
     "pending_dir": "pending",
     "signed_dir": "signed",
     "archive_dir": "pending/.archive",
+    "dual_signature": True,
     "signature_placement": {
-        "page": -1,              # -1 for last page, or 1, 2, ...
-        "x": 320,                # X coordinate in PDF points (A4 is 595x842)
-        "y": 630,                # Y coordinate
-        "width": 210,            # Signature box width
-        "height": 70,            # Signature box height
-        "keep_aspect_ratio": True,
-        "add_timestamp": True,
-        "timestamp_x": 320,
-        "timestamp_y": 705,
-        "timestamp_fontsize": 7.5
+        "recipient": {
+            "page": -1,
+            "x": 320,
+            "y": 630,
+            "width": 210,
+            "height": 70,
+            "label": "Employee / Recipient",
+            "add_timestamp": True,
+            "timestamp_fontsize": 7.5
+        },
+        "issuer": {
+            "page": -1,
+            "x": 60,
+            "y": 630,
+            "width": 200,
+            "height": 70,
+            "label": "IT Admin / Issuer",
+            "add_timestamp": True,
+            "timestamp_fontsize": 7.5
+        }
     },
     "auto_archive_pending": True
 }
@@ -51,6 +63,14 @@ def load_config():
         with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
             merged = DEFAULT_CONFIG.copy()
+            # Normalize legacy single placement to recipient
+            if "signature_placement" in data:
+                pl = data["signature_placement"]
+                if "x" in pl and "recipient" not in pl:
+                    data["signature_placement"] = {
+                        "recipient": pl,
+                        "issuer": DEFAULT_CONFIG["signature_placement"]["issuer"]
+                    }
             merged.update(data)
             return merged
     except Exception as e:
@@ -68,8 +88,9 @@ def save_config(config_data):
         return False
 
 def get_resolved_path(folder_path_str):
-    """Resolve relative or absolute folder paths."""
-    p = Path(folder_path_str)
+    """Resolve relative or absolute folder paths (supports OneDrive & env vars)."""
+    expanded = os.path.expandvars(os.path.expanduser(str(folder_path_str).strip()))
+    p = Path(expanded)
     if not p.is_absolute():
         p = BASE_DIR / p
     p.mkdir(parents=True, exist_ok=True)
@@ -79,7 +100,7 @@ def get_local_ips():
     """Discover all accessible local IPv4 addresses."""
     ips = []
     
-    # 1. Primary outgoing route IP (most reliable)
+    # 1. Primary outgoing route IP
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(('8.8.8.8', 80))
@@ -122,20 +143,111 @@ def get_pdf_metadata(filepath):
     except Exception:
         return 1
 
+def extract_pdf_metadata(doc_or_path):
+    """Extract employee name, email, hardware, date, and doc ID from PDF text."""
+    should_close = False
+    if isinstance(doc_or_path, (str, Path)):
+        try:
+            doc = pymupdf.open(str(doc_or_path))
+            should_close = True
+        except Exception:
+            return {}
+    else:
+        doc = doc_or_path
+
+    full_text = ''
+    try:
+        for page in doc:
+            full_text += page.get_text('text') + '\n'
+    except Exception:
+        pass
+    finally:
+        if should_close:
+            doc.close()
+
+    meta = {
+        'employee_name': '',
+        'email': '',
+        'username': '',
+        'location': '',
+        'hardware': [],
+        'date': '',
+        'doc_number': '',
+        'issuer_name': ''
+    }
+
+    if not full_text.strip():
+        return meta
+
+    # 1. Employee Name
+    given_match = re.search(r'Given\s*name\s*\n+([^\n\r]+)', full_text, re.I)
+    surname_match = re.search(r'Surname\s*\n+([^\n\r]+)', full_text, re.I)
+    if given_match and surname_match:
+        meta['employee_name'] = f"{given_match.group(1).strip()} {surname_match.group(1).strip()}".strip()
+
+    if not meta['employee_name']:
+        name_match = re.search(r'(?:Employee\s*Name|Recipient|Employee|Name|User):\s*([^\n\r,]+)', full_text, re.I)
+        if name_match:
+            meta['employee_name'] = name_match.group(1).strip()
+
+    # 2. Email
+    email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', full_text)
+    if email_match:
+        meta['email'] = email_match.group(0).strip()
+
+    # 3. Windows User / Username
+    user_match = re.search(r'(?:Windows\s*User|Username|User ID|EMP-\w+):\s*([^\n\r]+)', full_text, re.I)
+    if not user_match:
+        user_match = re.search(r'([A-Z0-9_\.-]+\\[a-zA-Z0-9_\.-]+)', full_text)
+    if user_match:
+        meta['username'] = user_match.group(1).strip() if hasattr(user_match, 'group') else user_match
+
+    # 4. Location
+    loc_match = re.search(r'Location\s*[:\n]+([^\n\r]+)', full_text, re.I)
+    if loc_match:
+        meta['location'] = loc_match.group(1).strip()
+
+    # 5. Hardware / Devices
+    hw_match = re.search(r'HARDWARE:\s*\n+([^\n\r]+)', full_text, re.I)
+    if hw_match and hw_match.group(1).strip():
+        meta['hardware'].append(hw_match.group(1).strip())
+
+    for line in full_text.split('\n'):
+        line_clean = line.strip()
+        if not line_clean:
+            continue
+        if re.search(r'(?:IMEI|SN-|Serial|ThinkPad|Latitude|MacBook|iPhone|iPad|Dock|Monitor|YubiKey)', line_clean, re.I):
+            if line_clean not in meta['hardware'] and not line_clean.startswith('HARDWARE'):
+                meta['hardware'].append(line_clean)
+
+    # 6. Date
+    date_match = re.search(r'(\d{1,2}\.\s*\d{1,2}\.\s*\d{4}|\d{4}-\d{2}-\d{2})', full_text)
+    if date_match:
+        meta['date'] = date_match.group(1).strip()
+
+    # 7. Document number
+    doc_num_match = re.search(r'(?:Document|Protocol|Doc)\s*(?:No|Number|#)?[:\s]+([A-Za-z0-9\-_]+)', full_text, re.I)
+    if doc_num_match:
+        meta['doc_number'] = doc_num_match.group(1).strip()
+
+    # 8. Issuer Name
+    issuer_match = re.search(r'(?:Handed over by|Issuer|IT Admin|IT Support):\s*([^\n\r]+)', full_text, re.I)
+    if issuer_match:
+        meta['issuer_name'] = issuer_match.group(1).strip()
+
+    return meta
+
 # ----------------- ROUTES: WEB PAGES -----------------
 
 @app.route('/')
 def desktop_dashboard():
-    """Desktop interface: QR code, pending & signed files, settings."""
+    """Desktop interface: QR code, pending & signed files, calibrator, settings."""
     config = load_config()
     ips = get_local_ips()
     primary_ip = ips[0]
     port = int(os.environ.get('PORT', config.get('port', 5000)))
     
-    # Check for public URL from environment or config
     public_url = os.environ.get('PUBLIC_URL') or config.get('public_url', '').strip()
-    
-    # Check if request was proxied through a public domain / reverse proxy (Render, Cloudflare, ngrok, etc.)
     forwarded_proto = request.headers.get('X-Forwarded-Proto', request.scheme)
     forwarded_host = request.headers.get('X-Forwarded-Host', request.host)
     
@@ -175,12 +287,14 @@ def mobile_sign(filename):
     page_count = get_pdf_metadata(file_path)
     file_size = format_file_size(file_path.stat().st_size)
     mod_time = datetime.fromtimestamp(file_path.stat().st_mtime).strftime('%Y-%m-%d %H:%M')
+    metadata = extract_pdf_metadata(file_path)
     
     return render_template('sign.html', 
                            filename=filename, 
                            page_count=page_count,
                            file_size=file_size,
                            mod_time=mod_time,
+                           metadata=metadata,
                            config=config)
 
 @app.route('/signed-success/<path:filename>')
@@ -192,7 +306,7 @@ def signed_success(filename):
 
 @app.route('/api/documents')
 def api_documents():
-    """Return lists of pending and signed PDF files."""
+    """Return lists of pending and signed PDF files with extracted metadata."""
     config = load_config()
     pending_dir = get_resolved_path(config.get('pending_dir', 'pending'))
     signed_dir = get_resolved_path(config.get('signed_dir', 'signed'))
@@ -204,21 +318,29 @@ def api_documents():
             
         for entry in directory.iterdir():
             if entry.is_file() and entry.suffix.lower() == '.pdf' and not entry.name.startswith('.'):
-                stat = entry.stat()
-                page_count = get_pdf_metadata(entry)
-                files_data.append({
-                    "name": entry.name,
-                    "size_bytes": stat.st_size,
-                    "size_formatted": format_file_size(stat.st_size),
-                    "modified_timestamp": stat.st_mtime,
-                    "modified_formatted": datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S'),
-                    "page_count": page_count,
-                    "preview_url": f"/api/preview/{'pending' if is_pending else 'signed'}/{entry.name}/1",
-                    "last_page_preview_url": f"/api/preview/{'pending' if is_pending else 'signed'}/{entry.name}/{page_count}",
-                    "download_url": f"/download/{'pending' if is_pending else 'signed'}/{entry.name}",
-                    "sign_url": f"/sign/{entry.name}" if is_pending else None
-                })
-        # Sort newest modified first
+                try:
+                    stat = entry.stat()
+                    doc = pymupdf.open(str(entry))
+                    page_count = len(doc)
+                    metadata = extract_pdf_metadata(doc)
+                    doc.close()
+
+                    files_data.append({
+                        "name": entry.name,
+                        "size_bytes": stat.st_size,
+                        "size_formatted": format_file_size(stat.st_size),
+                        "modified_timestamp": stat.st_mtime,
+                        "modified_formatted": datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S'),
+                        "page_count": page_count,
+                        "metadata": metadata,
+                        "preview_url": f"/api/preview/{'pending' if is_pending else 'signed'}/{entry.name}/1",
+                        "last_page_preview_url": f"/api/preview/{'pending' if is_pending else 'signed'}/{entry.name}/{page_count}",
+                        "download_url": f"/download/{'pending' if is_pending else 'signed'}/{entry.name}",
+                        "sign_url": f"/sign/{entry.name}" if is_pending else None
+                    })
+                except Exception as e:
+                    print(f"Error reading file {entry.name}: {e}")
+                    
         files_data.sort(key=lambda x: x['modified_timestamp'], reverse=True)
         return files_data
 
@@ -227,9 +349,57 @@ def api_documents():
         "signed": scan_dir(signed_dir, is_pending=False)
     })
 
-@app.route('/api/preview/<folder_type>/<path:filename>/<int:page>')
+@app.route('/api/metadata/<folder_type>/<path:filename>')
+def api_get_metadata(folder_type, filename):
+    """Return extracted metadata for a specific PDF."""
+    config = load_config()
+    target_dir = get_resolved_path(config.get('pending_dir' if folder_type == 'pending' else 'signed_dir', folder_type))
+    file_path = target_dir / filename
+    if not file_path.exists():
+        return jsonify({"success": False, "error": "File not found"}), 404
+    return jsonify({"success": True, "metadata": extract_pdf_metadata(file_path)})
+
+@app.route('/api/page-dimensions/<folder_type>/<path:filename>/<int(signed=True):page>')
+@app.route('/api/page-dimensions/<folder_type>/<path:filename>/<page>')
+def api_page_dimensions(folder_type, filename, page):
+    """Return page width and height in PDF points for the visual calibrator."""
+    try:
+        page_num = int(page)
+    except ValueError:
+        page_num = -1
+
+    config = load_config()
+    target_dir = get_resolved_path(config.get('pending_dir' if folder_type == 'pending' else 'signed_dir', folder_type))
+    file_path = target_dir / filename
+    if not file_path.exists():
+        return jsonify({"success": False, "error": "File not found"}), 404
+
+    try:
+        doc = pymupdf.open(str(file_path))
+        total_pages = len(doc)
+        page_idx = max(0, min(page_num - 1, total_pages - 1)) if page_num > 0 else total_pages - 1
+        pdf_page = doc[page_idx]
+        rect = pdf_page.rect
+        doc.close()
+        return jsonify({
+            "success": True,
+            "width": rect.width,
+            "height": rect.height,
+            "page": page_idx + 1,
+            "total_pages": total_pages
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/preview/<folder_type>/<path:filename>/<int(signed=True):page>')
+@app.route('/api/preview/<folder_type>/<path:filename>/<page>')
 def api_preview(folder_type, filename, page):
     """Render a specific PDF page as PNG thumbnail using PyMuPDF."""
+    try:
+        page_num = int(page)
+    except ValueError:
+        page_num = -1
+
     config = load_config()
     if folder_type == 'pending':
         target_dir = get_resolved_path(config.get('pending_dir', 'pending'))
@@ -246,11 +416,9 @@ def api_preview(folder_type, filename, page):
         doc = pymupdf.open(str(file_path))
         total_pages = len(doc)
         
-        # 1-indexed to 0-indexed
-        page_idx = max(0, min(page - 1, total_pages - 1))
+        page_idx = max(0, min(page_num - 1, total_pages - 1)) if page_num > 0 else total_pages - 1
         pdf_page = doc[page_idx]
         
-        # Render at 1.5x resolution for crisp high-DPI thumbnail
         zoom = float(request.args.get('zoom', 1.5))
         matrix = pymupdf.Matrix(zoom, zoom)
         pix = pdf_page.get_pixmap(matrix=matrix, alpha=False)
@@ -317,11 +485,9 @@ def api_upload():
     if not file.filename.lower().endswith('.pdf'):
         return jsonify({"success": False, "error": "Only PDF files are supported"}), 400
 
-    # Sanitize filename
     clean_name = Path(file.filename).name
     save_path = pending_dir / clean_name
 
-    # Avoid accidental overwrite if file exists with same name
     if save_path.exists():
         stem = save_path.stem
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -339,6 +505,7 @@ def api_upload():
 def api_sign(filename):
     """
     Overlay signature PNG onto PDF using PyMuPDF and save to signed folder.
+    Supports single or dual signature (role: 'recipient' | 'issuer' | 'both').
     """
     config = load_config()
     pending_dir = get_resolved_path(config.get('pending_dir', 'pending'))
@@ -350,88 +517,99 @@ def api_sign(filename):
         return jsonify({"success": False, "error": f"Pending file '{filename}' not found."}), 404
 
     data = request.get_json(silent=True) or {}
+    role = data.get('role', 'recipient').lower()  # 'recipient', 'issuer', or 'both'
     signature_data_url = data.get('signature', '')
+    signature_issuer_url = data.get('signature_issuer', '')
+    signature_recipient_url = data.get('signature_recipient', '')
     signer_name = data.get('signer_name', '').strip()
     signer_notes = data.get('signer_notes', '').strip()
 
-    if not signature_data_url:
+    if not signature_data_url and not signature_recipient_url and not signature_issuer_url:
         return jsonify({"success": False, "error": "No signature data received."}), 400
 
-    # Decode base64 image
-    try:
-        if ',' in signature_data_url:
-            base64_str = signature_data_url.split(',', 1)[1]
-        else:
-            base64_str = signature_data_url
-        sig_bytes = base64.b64decode(base64_str)
-    except Exception as e:
-        return jsonify({"success": False, "error": f"Invalid signature image data: {str(e)}"}), 400
-
-    # Signature placement settings
-    placement = config.get('signature_placement', DEFAULT_CONFIG['signature_placement'])
+    # Get placement definitions
+    cfg_placement = config.get('signature_placement', DEFAULT_CONFIG['signature_placement'])
     
-    # Allow client coordinate overrides if passed
+    # Handle backward compatibility / normalization
+    if "recipient" in cfg_placement:
+        placement_recipient = cfg_placement["recipient"]
+        placement_issuer = cfg_placement.get("issuer", DEFAULT_CONFIG["signature_placement"]["issuer"])
+    else:
+        placement_recipient = cfg_placement
+        placement_issuer = DEFAULT_CONFIG["signature_placement"]["issuer"]
+
+    # Allow custom coordinate override
     req_coords = data.get('coordinates')
     if req_coords and isinstance(req_coords, dict):
-        placement = {**placement, **req_coords}
+        if role == 'issuer':
+            placement_issuer = {**placement_issuer, **req_coords}
+        else:
+            placement_recipient = {**placement_recipient, **req_coords}
 
-    target_page_num = placement.get('page', -1)
-    sig_x = float(placement.get('x', 320))
-    sig_y = float(placement.get('y', 630))
-    sig_w = float(placement.get('width', 210))
-    sig_h = float(placement.get('height', 70))
-    keep_aspect = placement.get('keep_aspect_ratio', True)
-    add_timestamp = placement.get('add_timestamp', True)
-    ts_x = float(placement.get('timestamp_x', sig_x))
-    ts_y = float(placement.get('timestamp_y', sig_y + sig_h + 10))
-    ts_size = float(placement.get('timestamp_fontsize', 7.5))
+    def decode_sig(data_url):
+        if not data_url: return None
+        if ',' in data_url:
+            b64 = data_url.split(',', 1)[1]
+        else:
+            b64 = data_url
+        return base64.b64decode(b64)
 
     try:
         doc = pymupdf.open(str(source_path))
         num_pages = len(doc)
         
-        # Determine target page
-        if target_page_num == -1 or target_page_num >= num_pages:
-            page = doc[-1]
-        elif target_page_num <= 0:
-            page = doc[0]
-        else:
-            page = doc[target_page_num - 1]
+        # Helper to apply one signature
+        def apply_signature_to_page(sig_bytes, placement_info, label_name):
+            target_p = placement_info.get('page', -1)
+            if target_p == -1 or target_p >= num_pages:
+                target_page = doc[-1]
+            elif target_p <= 0:
+                target_page = doc[0]
+            else:
+                target_page = doc[target_p - 1]
 
-        # Calculate bounding box
-        rect = pymupdf.Rect(sig_x, sig_y, sig_x + sig_w, sig_y + sig_h)
+            sx = float(placement_info.get('x', 320))
+            sy = float(placement_info.get('y', 630))
+            sw = float(placement_info.get('width', 210))
+            sh = float(placement_info.get('height', 70))
+            keep_aspect = placement_info.get('keep_aspect_ratio', True)
+            add_ts = placement_info.get('add_timestamp', True)
+            ts_size = float(placement_info.get('timestamp_fontsize', 7.5))
 
-        # Overlay signature image onto PDF page
-        page.insert_image(
-            rect,
-            stream=sig_bytes,
-            keep_proportion=keep_aspect,
-            overlay=True
-        )
+            rect = pymupdf.Rect(sx, sy, sx + sw, sy + sh)
+            target_page.insert_image(rect, stream=sig_bytes, keep_proportion=keep_aspect, overlay=True)
 
-        # Optional timestamp / signer text overlay
-        if add_timestamp or signer_name:
-            now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            stamp_text = f"Digitally Signed: {now_str}"
-            if signer_name:
-                stamp_text = f"Signed by: {signer_name} | {now_str}"
-            if signer_notes:
-                stamp_text += f" | {signer_notes}"
-                
-            page.insert_text(
-                (ts_x, ts_y),
-                stamp_text,
-                fontsize=ts_size,
-                fontname="helv",
-                color=(0.25, 0.25, 0.25)
-            )
+            if add_ts or label_name:
+                now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                stamp_text = f"Digitally Signed: {now_str}"
+                if label_name:
+                    stamp_text = f"Signed by: {label_name} | {now_str}"
+                target_page.insert_text(
+                    (sx, sy + sh + 10),
+                    stamp_text,
+                    fontsize=ts_size,
+                    fontname="helv",
+                    color=(0.25, 0.25, 0.25)
+                )
+
+        # 1. Overlay based on role
+        if role == 'both' or (signature_recipient_url and signature_issuer_url):
+            if signature_issuer_url:
+                apply_signature_to_page(decode_sig(signature_issuer_url), placement_issuer, data.get('issuer_name', 'IT Admin'))
+            if signature_recipient_url:
+                apply_signature_to_page(decode_sig(signature_recipient_url), placement_recipient, signer_name or 'Recipient')
+        elif role == 'issuer':
+            sig_bytes = decode_sig(signature_data_url or signature_issuer_url)
+            apply_signature_to_page(sig_bytes, placement_issuer, signer_name or 'IT Admin')
+        else: # recipient
+            sig_bytes = decode_sig(signature_data_url or signature_recipient_url)
+            apply_signature_to_page(sig_bytes, placement_recipient, signer_name or 'Recipient')
 
         # Determine signed filename
         stem = source_path.stem
         signed_filename = f"{stem}_signed.pdf"
         output_path = signed_dir / signed_filename
         
-        # If signed file already exists, avoid collision
         if output_path.exists():
             ts = datetime.now().strftime('%Y%m%d_%H%M%S')
             signed_filename = f"{stem}_signed_{ts}.pdf"
@@ -441,7 +619,7 @@ def api_sign(filename):
         doc.save(str(output_path), garbage=4, deflate=True)
         doc.close()
 
-        # Handle pending original file
+        # Archive pending original file
         if config.get('auto_archive_pending', True):
             try:
                 archive_dir.mkdir(parents=True, exist_ok=True)
@@ -451,7 +629,6 @@ def api_sign(filename):
                 source_path.rename(archived_path)
             except Exception as e:
                 print(f"Notice: could not move pending file to archive: {e}")
-                # Fallback: remove from pending
                 try:
                     source_path.unlink(missing_ok=True)
                 except Exception:
