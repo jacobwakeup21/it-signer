@@ -6,15 +6,21 @@
 <style>
     /* Prevent unwanted touch gestures/scrolling on mobile canvas */
     #signatureCanvas {
-        touch-action: none;
+        touch-action: none !important;
+        -webkit-touch-callout: none;
         -webkit-user-select: none;
         user-select: none;
+        cursor: crosshair;
+        width: 100%;
+        height: 240px;
+        display: block;
     }
     .signature-wrapper {
         background-color: #ffffff;
         background-image: 
             radial-gradient(#e2e8f0 1px, transparent 1px);
         background-size: 16px 16px;
+        position: relative;
     }
 </style>
 {% endblock %}
@@ -86,12 +92,12 @@
         <!-- Canvas Container -->
         <div class="signature-wrapper relative rounded-xl border-2 border-sky-500/40 focus-within:border-sky-400 shadow-inner overflow-hidden">
             <!-- Guidelines watermark / signature line -->
-            <div class="absolute bottom-6 inset-x-8 border-b border-dashed border-slate-300 pointer-events-none flex justify-between items-center text-[11px] font-mono text-slate-400 select-none pb-1">
+            <div class="absolute bottom-6 inset-x-8 border-b border-dashed border-slate-300 pointer-events-none flex justify-between items-center text-[11px] font-mono text-slate-400 select-none pb-1 z-0">
                 <span>✕ Sign above line</span>
                 <span>IT Handover Confirmation</span>
             </div>
 
-            <canvas id="signatureCanvas" class="w-full h-56 sm:h-64 block cursor-crosshair"></canvas>
+            <canvas id="signatureCanvas" class="w-full relative z-10 block cursor-crosshair"></canvas>
         </div>
 
         <!-- Canvas Controls (Clear / Undo) -->
@@ -105,7 +111,7 @@
                 </button>
             </div>
             <span class="text-[11px] text-slate-400 flex items-center gap-1">
-                <i data-lucide="shield-check" class="w-3.5 h-3.5 text-emerald-400"></i> High-precision vector capture
+                <i data-lucide="shield-check" class="w-3.5 h-3.5 text-emerald-400"></i> Touch & Stylus Ready
             </span>
         </div>
 
@@ -132,64 +138,166 @@
 {% endblock %}
 
 {% block scripts %}
-<!-- SignaturePad JS Local Library -->
-<script src="{{ url_for('static', filename='js/signature_pad.umd.min.js') }}"></script>
+<!-- SignaturePad: CDN with Local Fallback -->
+<script src="https://cdn.jsdelivr.net/npm/signature_pad@5.0.4/dist/signature_pad.umd.min.js"></script>
+<script>
+    if (typeof SignaturePad === 'undefined') {
+        document.write('<script src="{{ url_for("static", filename="js/signature_pad.umd.min.js") }}"><\/script>');
+    }
+</script>
 <script>
 const currentFilename = {{ filename | tojson }};
 const totalPages = {{ page_count }};
 let currentPreviewPage = 1;
 let signaturePad = null;
 let currentInkColor = '#0f2b5c';
+let isDrawingFallback = false;
+let fallbackHasStrokes = false;
 
 document.addEventListener('DOMContentLoaded', () => {
     initSignaturePad();
-    window.addEventListener('resize', resizeCanvas);
+    window.addEventListener('resize', debounceResize);
+    window.addEventListener('orientationchange', debounceResize);
+    setTimeout(resizeCanvas, 150);
 });
+
+let resizeTimer = null;
+function debounceResize() {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(resizeCanvas, 100);
+}
 
 function initSignaturePad() {
     const canvas = document.getElementById('signatureCanvas');
-    
-    signaturePad = new SignaturePad(canvas, {
-        minWidth: 1.2,
-        maxWidth: 3.5,
-        penColor: currentInkColor,
-        backgroundColor: 'rgba(255, 255, 255, 0)',
-        velocityFilterWeight: 0.7
-    });
+    if (!canvas) return;
+
+    if (typeof SignaturePad !== 'undefined') {
+        try {
+            signaturePad = new SignaturePad(canvas, {
+                minWidth: 1.5,
+                maxWidth: 4.0,
+                penColor: currentInkColor,
+                backgroundColor: 'rgba(255, 255, 255, 0)',
+                velocityFilterWeight: 0.7
+            });
+        } catch (e) {
+            console.error('Error creating SignaturePad instance:', e);
+            setupFallbackDrawing(canvas);
+        }
+    } else {
+        console.warn('SignaturePad not available, using native canvas drawing fallback.');
+        setupFallbackDrawing(canvas);
+    }
 
     resizeCanvas();
 }
 
+function setupFallbackDrawing(canvas) {
+    const ctx = canvas.getContext('2d');
+    let lastX = 0, lastY = 0;
+
+    function getPos(e) {
+        const rect = canvas.getBoundingClientRect();
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        return {
+            x: clientX - rect.left,
+            y: clientY - rect.top
+        };
+    }
+
+    function start(e) {
+        isDrawingFallback = true;
+        fallbackHasStrokes = true;
+        const pos = getPos(e);
+        lastX = pos.x;
+        lastY = pos.y;
+        ctx.beginPath();
+        ctx.arc(lastX, lastY, 1.5, 0, Math.PI * 2);
+        ctx.fillStyle = currentInkColor;
+        ctx.fill();
+        if (e.cancelable) e.preventDefault();
+    }
+
+    function move(e) {
+        if (!isDrawingFallback) return;
+        const pos = getPos(e);
+        ctx.beginPath();
+        ctx.moveTo(lastX, lastY);
+        ctx.lineTo(pos.x, pos.y);
+        ctx.strokeStyle = currentInkColor;
+        ctx.lineWidth = 2.5;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.stroke();
+        lastX = pos.x;
+        lastY = pos.y;
+        if (e.cancelable) e.preventDefault();
+    }
+
+    function end() {
+        isDrawingFallback = false;
+    }
+
+    canvas.addEventListener('mousedown', start);
+    canvas.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', end);
+
+    canvas.addEventListener('touchstart', start, { passive: false });
+    canvas.addEventListener('touchmove', move, { passive: false });
+    window.addEventListener('touchend', end);
+}
+
 function resizeCanvas() {
     const canvas = document.getElementById('signatureCanvas');
-    if (!canvas || !signaturePad) return;
+    if (!canvas) return;
 
-    // Save existing strokes if any
-    const data = signaturePad.toData();
+    const rect = canvas.getBoundingClientRect();
+    const width = rect.width || canvas.offsetWidth || 400;
+    const height = 240; // fixed responsive height
 
     const ratio = Math.max(window.devicePixelRatio || 1, 1);
-    canvas.width = canvas.offsetWidth * ratio;
-    canvas.height = canvas.offsetHeight * ratio;
-    canvas.getContext("2d").scale(ratio, ratio);
+    
+    // Save existing strokes if signaturePad is active
+    let data = null;
+    if (signaturePad) {
+        data = signaturePad.toData();
+    }
 
-    signaturePad.clear();
-    if (data && data.length > 0) {
-        signaturePad.fromData(data);
+    canvas.width = width * ratio;
+    canvas.height = height * ratio;
+
+    const ctx = canvas.getContext('2d');
+    ctx.scale(ratio, ratio);
+
+    if (signaturePad) {
+        signaturePad.clear();
+        if (data && data.length > 0) {
+            signaturePad.fromData(data);
+        }
     }
 }
 
 function clearSignature() {
     if (signaturePad) {
         signaturePad.clear();
+    } else {
+        const canvas = document.getElementById('signatureCanvas');
+        if (canvas) {
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            fallbackHasStrokes = false;
+        }
     }
 }
 
 function undoSignature() {
-    if (!signaturePad) return;
-    const data = signaturePad.toData();
-    if (data && data.length > 0) {
-        data.pop(); // remove last stroke
-        signaturePad.fromData(data);
+    if (signaturePad) {
+        const data = signaturePad.toData();
+        if (data && data.length > 0) {
+            data.pop();
+            signaturePad.fromData(data);
+        }
     }
 }
 
@@ -236,8 +344,11 @@ function updatePreviewImg() {
 }
 
 async function saveAndSubmitSignature() {
-    if (!signaturePad || signaturePad.isEmpty()) {
-        alert('Please draw your signature before saving.');
+    const canvas = document.getElementById('signatureCanvas');
+    const isEmpty = signaturePad ? signaturePad.isEmpty() : !fallbackHasStrokes;
+    
+    if (isEmpty) {
+        alert('Please draw your signature in the box before saving.');
         return;
     }
 
@@ -257,7 +368,7 @@ async function saveAndSubmitSignature() {
     statusMsg.textContent = 'Uploading signature and generating signed PDF...';
 
     // Get PNG signature data URL
-    const signatureDataUrl = signaturePad.toDataURL('image/png');
+    const signatureDataUrl = signaturePad ? signaturePad.toDataURL('image/png') : canvas.toDataURL('image/png');
 
     try {
         const response = await fetch(`/api/sign/${encodeURIComponent(currentFilename)}`, {
@@ -279,7 +390,7 @@ async function saveAndSubmitSignature() {
             statusMsg.textContent = 'Signature overlaid successfully! Redirecting...';
             setTimeout(() => {
                 window.location.href = `/signed-success/${encodeURIComponent(result.filename)}`;
-            }, 800);
+            }, 600);
         } else {
             throw new Error(result.error || 'Failed to sign document.');
         }
