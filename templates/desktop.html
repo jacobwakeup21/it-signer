@@ -123,6 +123,26 @@
 
     <!-- Documents Section: Pending & Signed -->
     <div class="space-y-6">
+        <!-- Search & Filter Bar -->
+        <div class="bg-slate-800/80 border border-slate-700/80 rounded-xl p-3 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+            <div class="relative flex-1">
+                <i data-lucide="search" class="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2"></i>
+                <input type="text" id="docSearchInput" oninput="filterDocuments()" placeholder="Search documents by filename or date..." class="w-full bg-slate-900 border border-slate-700 rounded-lg pl-9 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:ring-2 focus:ring-sky-500 focus:outline-none">
+            </div>
+            <div class="flex items-center gap-2">
+                <label class="text-[11px] text-slate-400 font-medium whitespace-nowrap">Sort by:</label>
+                <select id="docSortSelect" onchange="sortAndRenderDocuments()" class="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:ring-2 focus:ring-sky-500 focus:outline-none">
+                    <option value="date_desc">Newest First</option>
+                    <option value="date_asc">Oldest First</option>
+                    <option value="name_asc">Name (A-Z)</option>
+                    <option value="size_desc">Size (Largest)</option>
+                </select>
+                <button onclick="refreshDocuments()" class="p-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded-lg text-xs transition" title="Refresh files">
+                    <i data-lucide="rotate-cw" class="w-4 h-4"></i>
+                </button>
+            </div>
+        </div>
+
         <!-- Pending Documents -->
         <div>
             <div class="flex items-center justify-between mb-4">
@@ -133,9 +153,6 @@
                     </h3>
                     <span id="pendingCountBadge" class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30">0 files</span>
                 </div>
-                <button onclick="refreshDocuments()" class="text-xs text-slate-400 hover:text-slate-200 flex items-center gap-1 transition">
-                    <i data-lucide="rotate-cw" class="w-3.5 h-3.5"></i> Refresh list
-                </button>
             </div>
 
             <!-- Pending Grid / List -->
@@ -150,13 +167,24 @@
 
         <!-- Signed Documents -->
         <div class="pt-6 border-t border-slate-800">
-            <div class="flex items-center justify-between mb-4">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
                 <div class="flex items-center gap-3">
                     <h3 class="text-xl font-bold text-white flex items-center gap-2">
                         <i data-lucide="check-circle-2" class="w-5 h-5 text-emerald-400"></i>
-                        Signed & Completed Handover Documents
+                        Signed & Completed Documents
                     </h3>
                     <span id="signedCountBadge" class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">0 files</span>
+                </div>
+                <!-- Signed Batch Actions -->
+                <div class="flex items-center gap-2">
+                    <a href="/api/download-all/signed" class="px-3 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 shadow-sm">
+                        <i data-lucide="archive" class="w-3.5 h-3.5"></i>
+                        Export All to ZIP (OneDrive)
+                    </a>
+                    <button onclick="clearAllSignedDocs()" class="px-3 py-1.5 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 shadow-sm">
+                        <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                        Clear All Signed
+                    </button>
                 </div>
             </div>
 
@@ -221,47 +249,66 @@
 
 <!-- Modal: Signature Coordinates & Settings -->
 <div id="settingsModal" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm hidden items-center justify-center p-4">
-    <div class="bg-slate-800 border border-slate-700 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-5">
+    <div class="bg-slate-800 border border-slate-700 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-5 max-h-[90vh] overflow-y-auto">
         <div class="flex justify-between items-center pb-2 border-b border-slate-700">
             <h3 class="font-bold text-white text-lg flex items-center gap-2">
                 <i data-lucide="sliders" class="w-5 h-5 text-sky-400"></i>
-                Signature Placement Settings
+                Settings & Folder Paths
             </h3>
             <button onclick="closeSettingsModal()" class="text-slate-400 hover:text-white">
                 <i data-lucide="x" class="w-5 h-5"></i>
             </button>
         </div>
 
-        <p class="text-xs text-slate-300">
-            Adjust the exact coordinates and size where the signature image will be stamped on the PDF (Standard A4 dimensions: 595 × 842 points).
-        </p>
-
         <form id="settingsForm" onsubmit="saveSettings(event)" class="space-y-4">
-            <div class="grid grid-cols-2 gap-4">
-                <div>
-                    <label class="block text-xs font-medium text-slate-300 mb-1">X Coordinate (pt)</label>
-                    <input type="number" id="setting_x" step="1" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:ring-2 focus:ring-sky-500 focus:outline-none">
-                    <span class="text-[10px] text-slate-500">From left margin</span>
-                </div>
-                <div>
-                    <label class="block text-xs font-medium text-slate-300 mb-1">Y Coordinate (pt)</label>
-                    <input type="number" id="setting_y" step="1" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:ring-2 focus:ring-sky-500 focus:outline-none">
-                    <span class="text-[10px] text-slate-500">From top margin</span>
-                </div>
-                <div>
-                    <label class="block text-xs font-medium text-slate-300 mb-1">Width (pt)</label>
-                    <input type="number" id="setting_w" step="1" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:ring-2 focus:ring-sky-500 focus:outline-none">
-                </div>
-                <div>
-                    <label class="block text-xs font-medium text-slate-300 mb-1">Height (pt)</label>
-                    <input type="number" id="setting_h" step="1" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:ring-2 focus:ring-sky-500 focus:outline-none">
+            <!-- Signature coordinates -->
+            <div>
+                <h4 class="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2">Signature Coordinates (A4: 595 × 842 pt)</h4>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-300 mb-1">X Coordinate (pt)</label>
+                        <input type="number" id="setting_x" step="1" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:ring-2 focus:ring-sky-500 focus:outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-300 mb-1">Y Coordinate (pt)</label>
+                        <input type="number" id="setting_y" step="1" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:ring-2 focus:ring-sky-500 focus:outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-300 mb-1">Width (pt)</label>
+                        <input type="number" id="setting_w" step="1" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:ring-2 focus:ring-sky-500 focus:outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-300 mb-1">Height (pt)</label>
+                        <input type="number" id="setting_h" step="1" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:ring-2 focus:ring-sky-500 focus:outline-none">
+                    </div>
                 </div>
             </div>
 
+            <!-- Folder Paths / OneDrive -->
+            <div class="pt-2 border-t border-slate-700 space-y-3">
+                <div class="flex items-center justify-between">
+                    <h4 class="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                        <i data-lucide="folder-sync" class="w-3.5 h-3.5 text-sky-400"></i> Folder Storage (OneDrive)
+                    </h4>
+                    <button type="button" onclick="setOneDrivePreset()" class="text-[10px] text-sky-400 hover:text-sky-300 font-semibold underline">
+                        Use OneDrive Path
+                    </button>
+                </div>
+                <div>
+                    <label class="block text-[11px] font-medium text-slate-300 mb-1">Pending Folder Path</label>
+                    <input type="text" id="setting_pending_dir" placeholder="pending (or C:/Users/.../OneDrive/pending)" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white placeholder-slate-500 focus:ring-2 focus:ring-sky-500 focus:outline-none">
+                </div>
+                <div>
+                    <label class="block text-[11px] font-medium text-slate-300 mb-1">Signed Output Folder Path</label>
+                    <input type="text" id="setting_signed_dir" placeholder="signed (or C:/Users/.../OneDrive/signed)" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white placeholder-slate-500 focus:ring-2 focus:ring-sky-500 focus:outline-none">
+                </div>
+            </div>
+
+            <!-- Public URL / Domain -->
             <div class="pt-2 border-t border-slate-700">
                 <label class="block text-xs font-medium text-slate-300 mb-1">Public Cloud URL / Tunnel Domain <span class="text-slate-500 font-normal">(Optional)</span></label>
-                <input type="url" id="setting_public_url" placeholder="e.g. https://my-handover-signer.onrender.com" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-500 focus:ring-2 focus:ring-sky-500 focus:outline-none">
-                <span class="text-[10px] text-slate-400">If set, desktop QR codes and mobile links will use this public HTTPS domain so phones on 4G/cellular can connect.</span>
+                <input type="url" id="setting_public_url" placeholder="e.g. https://my-handover-signer.onrender.com" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white placeholder-slate-500 focus:ring-2 focus:ring-sky-500 focus:outline-none">
+                <span class="text-[10px] text-slate-400">For phone access over cellular data when deployed on Render or Cloudflare Tunnel.</span>
             </div>
 
             <div class="space-y-2 pt-2 border-t border-slate-700">
