@@ -1,19 +1,32 @@
 {
     "host": "0.0.0.0",
     "port": 5000,
+    "public_url": "",
     "pending_dir": "pending",
     "signed_dir": "signed",
+    "archive_dir": "pending/.archive",
+    "dual_signature": true,
     "signature_placement": {
-        "page": -1,
-        "x": 320,
-        "y": 630,
-        "width": 210,
-        "height": 70,
-        "keep_aspect_ratio": true,
-        "add_timestamp": true,
-        "timestamp_x": 320,
-        "timestamp_y": 705,
-        "timestamp_fontsize": 7.5
+        "recipient": {
+            "page": -1,
+            "x": 320,
+            "y": 630,
+            "width": 210,
+            "height": 70,
+            "label": "Employee / Recipient",
+            "add_timestamp": true,
+            "timestamp_fontsize": 7.5
+        },
+        "issuer": {
+            "page": -1,
+            "x": 60,
+            "y": 630,
+            "width": 200,
+            "height": 70,
+            "label": "IT Admin / Issuer",
+            "add_timestamp": true,
+            "timestamp_fontsize": 7.5
+        }
     },
     "auto_archive_pending": true
 }
