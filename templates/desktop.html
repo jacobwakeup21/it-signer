@@ -1,0 +1,293 @@
+{% extends "base.html" %}
+
+{% block title %}Desktop Dashboard — IT Handover Signer{% endblock %}
+
+{% block content %}
+<div class="space-y-8">
+    <!-- Top Hero Section: QR Code & Fast Mobile Connect -->
+    <div class="bg-gradient-to-br from-slate-800 to-slate-900 border border-slate-700/80 rounded-2xl p-6 shadow-xl relative overflow-hidden">
+        <div class="absolute -top-24 -right-24 w-72 h-72 bg-sky-500/10 rounded-full blur-3xl pointer-events-none"></div>
+        <div class="absolute -bottom-24 -left-24 w-72 h-72 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none"></div>
+
+        <div class="flex flex-col md:flex-row items-center gap-8 relative z-10">
+            <!-- QR Code Card -->
+            <div class="flex flex-col items-center bg-white p-4 rounded-xl shadow-lg border border-slate-200">
+                <img id="qrImage" 
+                     src="/api/qr?ip={{ primary_ip }}&port={{ port }}&path=/mobile" 
+                     alt="Mobile Portal QR Code" 
+                     class="w-48 h-48 sm:w-56 sm:h-56 object-contain rounded-lg">
+                <div class="mt-2 text-center">
+                    <span class="text-[11px] font-semibold tracking-wider uppercase text-slate-600 flex items-center justify-center gap-1">
+                        <i data-lucide="scan-line" class="w-3.5 h-3.5 text-sky-600"></i> Scan to open on phone
+                    </span>
+                </div>
+            </div>
+
+            <!-- Network & Connection Info -->
+            <div class="flex-1 space-y-4 text-center md:text-left">
+                <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-sky-500/10 border border-sky-500/30 text-sky-400 text-xs font-medium">
+                    <span class="w-2 h-2 rounded-full bg-sky-400 animate-ping"></span>
+                    Local Wi-Fi Server Active
+                </div>
+                
+                <h2 class="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
+                    Sign Handover Documents on Android
+                </h2>
+                
+                <p class="text-sm text-slate-300 max-w-2xl leading-relaxed">
+                    Connect your phone to the same local network, scan the QR code with your camera or browser, and draw your signature with touch or stylus. The signature is instantly overlaid onto the PDF.
+                </p>
+
+                <!-- URL Bar & Actions -->
+                <div class="space-y-3 pt-2">
+                    <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 max-w-xl">
+                        <!-- Mode Selector (LAN IP vs Cloud/Tunnel) -->
+                        <div class="flex-shrink-0">
+                            <label class="sr-only" for="ipSelect">Select Network Mode</label>
+                            <select id="ipSelect" class="bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-sm text-slate-200 focus:ring-2 focus:ring-sky-500 focus:outline-none w-full sm:w-auto">
+                                {% if public_url %}
+                                <option value="{{ public_url }}" selected>🌐 Public Cloud URL</option>
+                                {% endif %}
+                                <option value="custom_url">🌐 Custom Cloud / Tunnel URL...</option>
+                                {% for ip in ips %}
+                                <option value="{{ ip }}" {% if not public_url and ip == primary_ip %}selected{% endif %}>📶 LAN: {{ ip }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+
+                        <!-- URL Display -->
+                        <div class="flex-1 flex items-center bg-slate-950/70 border border-slate-700 rounded-lg px-3 py-2 font-mono text-xs text-sky-300 truncate">
+                            <span id="fullMobileUrl" class="truncate">{{ mobile_url }}</span>
+                        </div>
+
+                        <!-- Action Buttons -->
+                        <button onclick="copyMobileUrl()" class="px-3.5 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-sm font-medium transition flex items-center justify-center gap-1.5 shadow">
+                            <i data-lucide="copy" class="w-4 h-4"></i>
+                            <span id="copyBtnText">Copy</span>
+                        </button>
+                        <a id="openMobileLink" href="{{ mobile_url }}" target="_blank" class="px-3.5 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-sm font-medium transition flex items-center justify-center gap-1.5 shadow shadow-sky-600/30">
+                            <i data-lucide="external-link" class="w-4 h-4"></i>
+                            <span>Open</span>
+                        </a>
+                    </div>
+                    <p class="text-xs text-slate-400 flex items-center justify-center md:justify-start gap-1">
+                        <i data-lucide="globe" class="w-3.5 h-3.5 text-sky-400"></i>
+                        <span>Works over internet/cellular when deployed to a cloud microserver or public tunnel.</span>
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Quick Upload & Stats Bar -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <!-- Drag & Drop Upload Zone -->
+        <div class="lg:col-span-2 bg-slate-800/60 border-2 border-dashed border-slate-700 hover:border-sky-500/60 rounded-2xl p-6 transition flex flex-col items-center justify-center text-center cursor-pointer group" id="dropZone">
+            <input type="file" id="pdfFileInput" accept="application/pdf,.pdf" class="hidden">
+            <div class="w-12 h-12 rounded-xl bg-sky-500/10 text-sky-400 flex items-center justify-center mb-3 group-hover:scale-110 transition">
+                <i data-lucide="upload-cloud" class="w-6 h-6"></i>
+            </div>
+            <h3 class="text-base font-semibold text-white">Drop Handover PDF here to add to <span class="text-sky-400 font-mono">./pending</span></h3>
+            <p class="text-xs text-slate-400 mt-1">or click anywhere in this box to select a PDF from your computer</p>
+            <div id="uploadStatus" class="mt-3 hidden text-xs font-medium"></div>
+        </div>
+
+        <!-- Settings / Placement Quick Control -->
+        <div class="bg-slate-800/60 border border-slate-700/80 rounded-2xl p-6 flex flex-col justify-between">
+            <div>
+                <div class="flex items-center justify-between mb-3">
+                    <h3 class="text-base font-semibold text-white flex items-center gap-2">
+                        <i data-lucide="sliders" class="w-4 h-4 text-sky-400"></i>
+                        Signature Coordinates
+                    </h3>
+                    <button onclick="openSettingsModal()" class="text-xs text-sky-400 hover:text-sky-300 font-medium">Configure</button>
+                </div>
+                <div class="text-xs text-slate-300 space-y-1.5 font-mono bg-slate-900/60 p-3 rounded-lg border border-slate-700/50">
+                    <div class="flex justify-between"><span>Page:</span> <span class="text-sky-300">Last Page</span></div>
+                    <div class="flex justify-between"><span>Box (X, Y):</span> <span class="text-sky-300">320, 630 pt</span></div>
+                    <div class="flex justify-between"><span>Size (W × H):</span> <span class="text-sky-300">210 × 70 pt</span></div>
+                    <div class="flex justify-between"><span>Timestamp:</span> <span class="text-emerald-400">Enabled</span></div>
+                </div>
+            </div>
+            <div class="mt-4 flex items-center gap-2">
+                <button onclick="openSettingsModal()" class="w-full py-2 bg-slate-700/70 hover:bg-slate-700 text-slate-200 text-xs font-medium rounded-lg transition flex items-center justify-center gap-1.5">
+                    <i data-lucide="settings" class="w-3.5 h-3.5"></i>
+                    Edit Overlay Placement
+                </button>
+                <button onclick="refreshDocuments()" class="p-2 bg-slate-700/70 hover:bg-slate-700 text-slate-200 text-xs font-medium rounded-lg transition" title="Refresh files">
+                    <i data-lucide="refresh-cw" class="w-4 h-4"></i>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Documents Section: Pending & Signed -->
+    <div class="space-y-6">
+        <!-- Pending Documents -->
+        <div>
+            <div class="flex items-center justify-between mb-4">
+                <div class="flex items-center gap-3">
+                    <h3 class="text-xl font-bold text-white flex items-center gap-2">
+                        <i data-lucide="clock" class="w-5 h-5 text-amber-400"></i>
+                        Pending Signatures
+                    </h3>
+                    <span id="pendingCountBadge" class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30">0 files</span>
+                </div>
+                <button onclick="refreshDocuments()" class="text-xs text-slate-400 hover:text-slate-200 flex items-center gap-1 transition">
+                    <i data-lucide="rotate-cw" class="w-3.5 h-3.5"></i> Refresh list
+                </button>
+            </div>
+
+            <!-- Pending Grid / List -->
+            <div id="pendingContainer" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+                <!-- Loaded dynamically via JS -->
+                <div class="col-span-full py-12 text-center text-slate-500 text-sm">
+                    <i data-lucide="loader-2" class="w-6 h-6 animate-spin mx-auto mb-2 text-sky-400"></i>
+                    Loading pending documents...
+                </div>
+            </div>
+        </div>
+
+        <!-- Signed Documents -->
+        <div class="pt-6 border-t border-slate-800">
+            <div class="flex items-center justify-between mb-4">
+                <div class="flex items-center gap-3">
+                    <h3 class="text-xl font-bold text-white flex items-center gap-2">
+                        <i data-lucide="check-circle-2" class="w-5 h-5 text-emerald-400"></i>
+                        Signed & Completed Handover Documents
+                    </h3>
+                    <span id="signedCountBadge" class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">0 files</span>
+                </div>
+            </div>
+
+            <!-- Signed Grid / List -->
+            <div id="signedContainer" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+                <!-- Loaded dynamically via JS -->
+                <div class="col-span-full py-8 text-center text-slate-500 text-sm">
+                    No signed documents yet.
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Dedicated Document QR Code -->
+<div id="docQrModal" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm hidden items-center justify-center p-4">
+    <div class="bg-slate-800 border border-slate-700 rounded-2xl max-w-sm w-full p-6 shadow-2xl space-y-4 text-center">
+        <div class="flex justify-between items-center pb-2 border-b border-slate-700">
+            <h3 class="font-bold text-white text-base truncate flex items-center gap-2">
+                <i data-lucide="qr-code" class="w-4 h-4 text-sky-400"></i>
+                Direct Document QR
+            </h3>
+            <button onclick="closeDocQrModal()" class="text-slate-400 hover:text-white">
+                <i data-lucide="x" class="w-5 h-5"></i>
+            </button>
+        </div>
+        <p id="docQrFilename" class="text-xs font-medium text-slate-300 truncate bg-slate-900/60 p-2 rounded border border-slate-700"></p>
+        <div class="flex justify-center bg-white p-4 rounded-xl shadow border border-slate-200">
+            <img id="docQrImg" src="" alt="Document QR Code" class="w-52 h-52 object-contain">
+        </div>
+        <p class="text-xs text-slate-400">Scan to open directly into signing mode on mobile.</p>
+        <div class="flex gap-2">
+            <button onclick="copyDocQrUrl()" class="flex-1 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-xs font-medium transition flex items-center justify-center gap-1">
+                <i data-lucide="copy" class="w-3.5 h-3.5"></i> Copy Link
+            </button>
+            <a id="docQrDirectBtn" href="#" target="_blank" class="flex-1 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-xs font-medium transition flex items-center justify-center gap-1">
+                <i data-lucide="external-link" class="w-3.5 h-3.5"></i> Open
+            </a>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: PDF Full Preview -->
+<div id="pdfPreviewModal" class="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm hidden items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-4xl w-full max-h-[92vh] flex flex-col shadow-2xl overflow-hidden">
+        <div class="flex justify-between items-center p-4 border-b border-slate-800 bg-slate-800/80">
+            <h3 id="pdfPreviewTitle" class="font-bold text-white text-base truncate">Document Preview</h3>
+            <div class="flex items-center gap-3">
+                <a id="pdfPreviewDownloadBtn" href="#" target="_blank" class="px-3 py-1.5 bg-sky-600 hover:bg-sky-500 text-white text-xs font-medium rounded-lg flex items-center gap-1">
+                    <i data-lucide="download" class="w-3.5 h-3.5"></i> Download PDF
+                </a>
+                <button onclick="closePdfPreviewModal()" class="text-slate-400 hover:text-white p-1">
+                    <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+            </div>
+        </div>
+        <div class="flex-1 overflow-auto p-4 flex items-center justify-center bg-slate-950">
+            <img id="pdfPreviewImg" src="" alt="PDF Preview" class="max-w-full max-h-[75vh] object-contain shadow-2xl rounded border border-slate-800">
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Signature Coordinates & Settings -->
+<div id="settingsModal" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm hidden items-center justify-center p-4">
+    <div class="bg-slate-800 border border-slate-700 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-5">
+        <div class="flex justify-between items-center pb-2 border-b border-slate-700">
+            <h3 class="font-bold text-white text-lg flex items-center gap-2">
+                <i data-lucide="sliders" class="w-5 h-5 text-sky-400"></i>
+                Signature Placement Settings
+            </h3>
+            <button onclick="closeSettingsModal()" class="text-slate-400 hover:text-white">
+                <i data-lucide="x" class="w-5 h-5"></i>
+            </button>
+        </div>
+
+        <p class="text-xs text-slate-300">
+            Adjust the exact coordinates and size where the signature image will be stamped on the PDF (Standard A4 dimensions: 595 × 842 points).
+        </p>
+
+        <form id="settingsForm" onsubmit="saveSettings(event)" class="space-y-4">
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1">X Coordinate (pt)</label>
+                    <input type="number" id="setting_x" step="1" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:ring-2 focus:ring-sky-500 focus:outline-none">
+                    <span class="text-[10px] text-slate-500">From left margin</span>
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1">Y Coordinate (pt)</label>
+                    <input type="number" id="setting_y" step="1" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:ring-2 focus:ring-sky-500 focus:outline-none">
+                    <span class="text-[10px] text-slate-500">From top margin</span>
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1">Width (pt)</label>
+                    <input type="number" id="setting_w" step="1" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:ring-2 focus:ring-sky-500 focus:outline-none">
+                </div>
+                <div>
+                    <label class="block text-xs font-medium text-slate-300 mb-1">Height (pt)</label>
+                    <input type="number" id="setting_h" step="1" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white focus:ring-2 focus:ring-sky-500 focus:outline-none">
+                </div>
+            </div>
+
+            <div class="pt-2 border-t border-slate-700">
+                <label class="block text-xs font-medium text-slate-300 mb-1">Public Cloud URL / Tunnel Domain <span class="text-slate-500 font-normal">(Optional)</span></label>
+                <input type="url" id="setting_public_url" placeholder="e.g. https://my-handover-signer.onrender.com" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-500 focus:ring-2 focus:ring-sky-500 focus:outline-none">
+                <span class="text-[10px] text-slate-400">If set, desktop QR codes and mobile links will use this public HTTPS domain so phones on 4G/cellular can connect.</span>
+            </div>
+
+            <div class="space-y-2 pt-2 border-t border-slate-700">
+                <label class="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" id="setting_timestamp" class="rounded bg-slate-900 border-slate-700 text-sky-500 focus:ring-sky-500">
+                    <span class="text-xs text-slate-200">Overlay digital timestamp text beneath signature</span>
+                </label>
+                <label class="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" id="setting_archive" class="rounded bg-slate-900 border-slate-700 text-sky-500 focus:ring-sky-500">
+                    <span class="text-xs text-slate-200">Automatically archive original PDF from <code class="text-sky-300 font-mono text-[11px]">./pending</code> after signing</span>
+                </label>
+            </div>
+
+            <div class="flex justify-end gap-3 pt-3 border-t border-slate-700">
+                <button type="button" onclick="closeSettingsModal()" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-xs font-medium transition">
+                    Cancel
+                </button>
+                <button type="submit" class="px-5 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-xs font-semibold shadow shadow-sky-600/30 transition">
+                    Save Settings
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/desktop.js') }}"></script>
+{% endblock %}

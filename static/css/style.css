@@ -1,0 +1,53 @@
+/* Custom Styles for IT Handover Signer */
+
+@layer utilities {
+    /* Custom scrollbar */
+    ::-webkit-scrollbar {
+        width: 6px;
+        height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+        background: #0f172a;
+    }
+    ::-webkit-scrollbar-thumb {
+        background: #334155;
+        border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+        background: #475569;
+    }
+}
+
+/* Canvas styling */
+canvas#signatureCanvas {
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    cursor: crosshair;
+}
+
+/* Drag and Drop Zone animations */
+#dropZone.dragover {
+    border-color: #38bdf8 !important;
+    background-color: rgba(56, 189, 248, 0.1) !important;
+    transform: scale(1.01);
+}
+
+/* Card hover transitions */
+.doc-card {
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.doc-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3), 0 8px 10px -6px rgba(0, 0, 0, 0.3);
+}
+
+/* Prevent text selection during stylus signing */
+.no-select {
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    -khtml-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+    user-select: none;
+}
