@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+
+{% block title %}Document Signed Successfully!{% endblock %}
+
+{% block content %}
+<div class="max-w-md mx-auto py-8 text-center space-y-6">
+    <!-- Success Banner Card -->
+    <div class="bg-slate-800 border border-emerald-500/40 rounded-3xl p-6 sm:p-8 shadow-2xl space-y-5">
+        <div class="w-16 h-16 rounded-2xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center mx-auto ring-8 ring-emerald-500/10">
+            <i data-lucide="check" class="w-8 h-8"></i>
+        </div>
+
+        <div>
+            <h2 class="text-xl sm:text-2xl font-black text-white tracking-tight">Handover Signed!</h2>
+            <p class="text-xs sm:text-sm text-slate-300 mt-1">
+                Your signature has been embedded onto the PDF and saved to <code class="text-sky-300 font-mono">./signed</code>.
+            </p>
+        </div>
+
+        <div class="bg-slate-900/80 p-3 rounded-xl border border-slate-700/60 text-left">
+            <span class="text-[10px] text-slate-400 font-semibold uppercase tracking-wider block">Generated Document</span>
+            <p class="text-xs font-mono font-bold text-sky-300 truncate mt-0.5">{{ filename }}</p>
+        </div>
+
+        <!-- Signed Page Preview -->
+        <div class="bg-slate-950 p-2 rounded-xl border border-slate-700/80 overflow-hidden shadow-inner">
+            <img src="/api/preview/signed/{{ filename }}/1?zoom=1.0" 
+                 alt="Signed Document" 
+                 class="w-full h-auto max-h-64 object-contain rounded mx-auto"
+                 onerror="this.src='/static/img/pdf-icon.svg'">
+        </div>
+
+        <!-- Actions -->
+        <div class="space-y-2 pt-2">
+            <a href="/download/signed/{{ filename }}" target="_blank" class="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-sm font-bold shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-2 transition">
+                <i data-lucide="download" class="w-4 h-4"></i>
+                Download Signed PDF
+            </a>
+            <a href="/mobile" class="w-full py-3 bg-slate-700 hover:bg-slate-600 text-white rounded-xl text-sm font-semibold flex items-center justify-center gap-2 transition">
+                <i data-lucide="arrow-left" class="w-4 h-4"></i>
+                Sign Another Document
+            </a>
+        </div>
+    </div>
+</div>
+{% endblock %}
