@@ -5,6 +5,7 @@ import json
 import base64
 import socket
 import logging
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, send_file, send_from_directory, redirect, url_for
@@ -481,6 +482,92 @@ def download_file(folder_type, filename):
         return "Invalid folder", 400
 
     return send_from_directory(str(target_dir), filename, as_attachment=False)
+
+@app.route('/api/documents/<folder_type>/<path:filename>', methods=['DELETE'])
+@app.route('/api/delete/<folder_type>/<path:filename>', methods=['POST', 'DELETE'])
+def api_delete_document(folder_type, filename):
+    """Delete a document from pending, signed, or archive folder."""
+    config = load_config()
+    if folder_type == 'pending':
+        target_dir = get_resolved_path(config.get('pending_dir', 'pending'))
+    elif folder_type == 'signed':
+        target_dir = get_resolved_path(config.get('signed_dir', 'signed'))
+    elif folder_type == 'archive':
+        target_dir = get_resolved_path(config.get('archive_dir', 'pending/.archive'))
+    else:
+        return jsonify({"success": False, "error": "Invalid folder type"}), 400
+
+    clean_name = Path(filename).name
+    file_path = target_dir / clean_name
+
+    if not file_path.exists():
+        return jsonify({"success": False, "error": f"File '{clean_name}' not found."}), 404
+
+    try:
+        file_path.unlink()
+        return jsonify({"success": True, "message": f"Deleted {clean_name}"})
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Failed to delete file: {str(e)}"}), 500
+
+@app.route('/api/clear/<folder_type>', methods=['POST'])
+def api_clear_folder(folder_type):
+    """Clear all PDF files in a given folder."""
+    config = load_config()
+    if folder_type == 'signed':
+        target_dir = get_resolved_path(config.get('signed_dir', 'signed'))
+    elif folder_type == 'pending':
+        target_dir = get_resolved_path(config.get('pending_dir', 'pending'))
+    elif folder_type == 'archive':
+        target_dir = get_resolved_path(config.get('archive_dir', 'pending/.archive'))
+    else:
+        return jsonify({"success": False, "error": "Invalid folder type"}), 400
+
+    deleted_count = 0
+    if target_dir.exists():
+        for f in target_dir.glob('*.pdf'):
+            try:
+                f.unlink()
+                deleted_count += 1
+            except Exception:
+                pass
+
+    return jsonify({"success": True, "count": deleted_count, "message": f"Cleared {deleted_count} files"})
+
+@app.route('/api/download-all/<folder_type>')
+def api_download_all_zip(folder_type):
+    """Export all PDF documents in a folder as a single ZIP archive."""
+    config = load_config()
+    if folder_type == 'signed':
+        target_dir = get_resolved_path(config.get('signed_dir', 'signed'))
+        prefix = "signed_handover_documents"
+    elif folder_type == 'pending':
+        target_dir = get_resolved_path(config.get('pending_dir', 'pending'))
+        prefix = "pending_handover_documents"
+    else:
+        return "Invalid folder", 400
+
+    if not target_dir.exists():
+        return "Directory not found", 404
+
+    pdf_files = list(target_dir.glob('*.pdf'))
+    if not pdf_files:
+        return "No PDF files found to export", 404
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for pdf in pdf_files:
+            zf.write(pdf, arcname=pdf.name)
+
+    buf.seek(0)
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    zip_filename = f"{prefix}_{timestamp}.zip"
+
+    return send_file(
+        buf,
+        mimetype='application/zip',
+        as_attachment=True,
+        download_name=zip_filename
+    )
 
 @app.route('/api/config', methods=['GET', 'POST'])
 def api_config():
