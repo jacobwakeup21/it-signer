@@ -9,6 +9,7 @@ import logging
 import zipfile
 import urllib.request
 import urllib.error
+import urllib.parse
 from datetime import datetime
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, send_file, send_from_directory, redirect, url_for
@@ -224,13 +225,20 @@ def github_test_connection(repo=None, token=None):
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+def quote_github_path(path_str):
+    """Safely encode GitHub repo path segments to prevent spaces and unicode characters from breaking URLs."""
+    clean = str(path_str).strip().lstrip('/')
+    parts = clean.split('/')
+    return '/'.join(urllib.parse.quote(p, safe='') for p in parts)
+
 def github_list_pending_files():
     """List all files in GitHub repo's pending directory."""
     gh = get_github_config()
     if not gh['is_configured']:
         return []
     try:
-        endpoint = f"repos/{gh['repo']}/contents/pending?ref={gh['branch']}"
+        query = urllib.parse.urlencode({'ref': gh['branch']})
+        endpoint = f"repos/{gh['repo']}/contents/pending?{query}"
         items = github_api_request("GET", endpoint)
         if isinstance(items, list):
             files = []
@@ -254,14 +262,17 @@ def github_list_pending_files():
         return []
 
 def github_delete_file(path_in_repo, sha=None, commit_msg=None):
-    """Delete a file from GitHub repository."""
+    """Delete a file from GitHub repository with safe URL encoding."""
     gh = get_github_config()
     if not gh['is_configured']:
         raise ValueError("GitHub integration is not configured.")
 
     clean_path = path_in_repo.lstrip('/')
+    encoded_path = quote_github_path(clean_path)
+
     if not sha:
-        endpoint = f"repos/{gh['repo']}/contents/{clean_path}?ref={gh['branch']}"
+        query = urllib.parse.urlencode({'ref': gh['branch']})
+        endpoint = f"repos/{gh['repo']}/contents/{encoded_path}?{query}"
         item = github_api_request("GET", endpoint)
         sha = item.get('sha')
         if not sha:
@@ -274,15 +285,16 @@ def github_delete_file(path_in_repo, sha=None, commit_msg=None):
         "sha": sha,
         "branch": gh['branch']
     }
-    return github_api_request("DELETE", f"repos/{gh['repo']}/contents/{clean_path}", data=payload)
+    return github_api_request("DELETE", f"repos/{gh['repo']}/contents/{encoded_path}", data=payload)
 
 def github_upload_file(path_in_repo, file_bytes, commit_msg=None):
-    """Upload or update a file in GitHub repository."""
+    """Upload or update a file in GitHub repository with safe URL encoding."""
     gh = get_github_config()
     if not gh['is_configured']:
         raise ValueError("GitHub integration is not configured.")
 
     clean_path = path_in_repo.lstrip('/')
+    encoded_path = quote_github_path(clean_path)
     filename = Path(clean_path).name
     b64_content = base64.b64encode(file_bytes).decode('ascii')
 
@@ -293,13 +305,14 @@ def github_upload_file(path_in_repo, file_bytes, commit_msg=None):
     }
 
     try:
-        existing = github_api_request("GET", f"repos/{gh['repo']}/contents/{clean_path}?ref={gh['branch']}")
+        query = urllib.parse.urlencode({'ref': gh['branch']})
+        existing = github_api_request("GET", f"repos/{gh['repo']}/contents/{encoded_path}?{query}")
         if isinstance(existing, dict) and "sha" in existing:
             payload["sha"] = existing["sha"]
     except Exception:
         pass
 
-    return github_api_request("PUT", f"repos/{gh['repo']}/contents/{clean_path}", data=payload)
+    return github_api_request("PUT", f"repos/{gh['repo']}/contents/{encoded_path}", data=payload)
 
 def get_pdf_metadata(filepath):
     """Extract page count and basic metadata from PDF using PyMuPDF."""
