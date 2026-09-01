@@ -219,7 +219,7 @@ function renderPendingGrid(files) {
                 <a href="${file.download_url}" target="_blank" class="p-1.5 bg-slate-700/70 hover:bg-slate-700 text-slate-300 rounded-lg text-xs transition" title="Download original">
                     <i data-lucide="download" class="w-3.5 h-3.5"></i>
                 </a>
-                <button onclick="deleteDocument('pending', '${file.name}')" class="p-1.5 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 rounded-lg text-xs transition" title="Delete file">
+                <button data-filename="${encodeURIComponent(file.name)}" onclick="deleteDocument('pending', decodeURIComponent(this.getAttribute('data-filename')))" class="p-1.5 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 rounded-lg text-xs transition" title="Delete file">
                     <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
                 </button>
             </div>
@@ -966,7 +966,7 @@ async function refreshGitHubPendingFiles() {
                         </div>
                     </div>
                 </div>
-                <button onclick="deleteGitHubFile('${file.name}')" class="px-3 py-1.5 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 rounded-lg text-xs font-semibold transition flex items-center gap-1 flex-shrink-0" title="Delete from GitHub repository">
+                <button data-filename="${encodeURIComponent(file.name)}" onclick="deleteGitHubFile(decodeURIComponent(this.getAttribute('data-filename')))" class="px-3 py-1.5 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 rounded-lg text-xs font-semibold transition flex items-center gap-1 flex-shrink-0" title="Delete from GitHub repository">
                     <i data-lucide="trash-2" class="w-3.5 h-3.5"></i> Delete
                 </button>
             </div>
