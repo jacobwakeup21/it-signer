@@ -6,7 +6,8 @@ A lightweight, enterprise-ready Python Flask web application designed for seamle
 
 ## 🌟 Key Features
 
-- 📂 **Local Folder Watching / Management**: Automatically detects and lists PDF documents placed in `./pending`.
+- 📂 **Dynamic Upload & Local Watching**: Drop PDFs into the desktop dashboard or `./pending` folder on demand.
+- 🐙 **GitHub Pending & Cloud Manager**: Direct integration with GitHub REST API allows viewing and deleting files sitting in the GitHub repository's `pending/` folder with 1-click, plus automatic removal of pending files and auto-uploading of signed documents upon signature completion.
 - 📱 **Mobile Touch & Stylus Signing**: Smooth, responsive vector signature capture powered by `signature_pad.js` with retina/high-DPI canvas scaling and palm/gesture rejection.
 - ⚡ **Instant PyMuPDF Overlay**: Accurately embeds drawn signatures (with optional timestamp & signer metadata) directly onto the target coordinates of the PDF's last page and saves to `./signed`.
 - 📲 **Desktop Dashboard with QR Codes**: Displays automatic LAN IP detection and high-resolution QR codes for immediate one-scan mobile access.
@@ -31,10 +32,13 @@ python app.py
 ```
 
 ### 2. Workflow
-1. **Drop PDF**: Place any handover PDF into the `pending/` folder (or drag and drop it into the Desktop Dashboard at `http://localhost:5000`).
-2. **Scan QR Code**: Open the camera or browser on your Android phone/tablet and scan the QR code displayed on the desktop screen.
-3. **Sign**: Review the document thumbnail, draw the recipient's signature with your finger or stylus, and tap **"Save & Overlay Signature"**.
-4. **Complete**: The signed PDF is instantly saved to `signed/` with the signature embedded at the exact target location, and the pending file is archived.
+1. **Upload PDF**: Drag and drop any handover PDF into the Desktop Dashboard at `http://localhost:5000` (or place it into `./pending`).
+2. **Scan QR Code**: Scan the QR code displayed on the desktop screen using your phone.
+3. **Sign**: Draw the recipient's and/or IT issuer's signature on the touch screen and tap **"Save & Overlay Signature"**.
+4. **Complete**: 
+   - The signed PDF is instantly saved to `signed/<filename>_signed.pdf` where it stays permanently.
+   - The original pending file is automatically moved out of pending (archived).
+   - If GitHub integration is enabled, the pending file is automatically deleted from GitHub and the signed PDF is uploaded to GitHub's `signed/` folder.
 
 ---
 
@@ -42,17 +46,21 @@ python app.py
 
 ```
 it-handover-signer/
-├── app.py                      # Flask backend & PyMuPDF signing pipeline
-├── config.json                 # Placement coordinates & folder configuration
+├── app.py                      # Flask backend & PyMuPDF signing pipeline + GitHub API
+├── config.json                 # Placement coordinates, folder config & GitHub settings
+├── clean_github_pending.ps1    # PowerShell script to purge GitHub pending files
 ├── requirements.txt            # Python dependencies
+├── .gitignore                  # Prevents committing pending & signed PDFs to GitHub
 ├── run.bat                     # Windows one-click launcher
 ├── start.ps1                   # PowerShell launcher
-├── pending/                    # Input folder for unsigned PDFs
-│   └── IT_Equipment_Handover_Protocol_001.pdf
-├── signed/                     # Output folder for signed PDFs
+├── pending/                    # Input folder for unsigned PDFs (starts clean)
+│   └── .gitkeep
+├── signed/                     # Output folder for signed PDFs (stays permanently)
+│   └── .gitkeep
+├── samples/                    # Sample template PDFs (not auto-loaded)
 ├── templates/
 │   ├── base.html               # Base layout & styles
-│   ├── desktop.html            # Desktop dashboard with QR code & file manager
+│   ├── desktop.html            # Desktop dashboard with QR code, file & GitHub manager
 │   ├── mobile_list.html        # Mobile document selection
 │   ├── sign.html               # Mobile touch signature interface
 │   ├── signed_success.html     # Completion confirmation screen
@@ -63,7 +71,7 @@ it-handover-signer/
     ├── js/
     │   ├── signature_pad.umd.min.js # Local offline SignaturePad
     │   ├── qrcode.min.js       # Local offline QR generator
-    │   └── desktop.js          # Desktop dashboard logic
+    │   └── desktop.js          # Desktop dashboard logic & GitHub interactions
 ```
 
 ---
@@ -77,18 +85,33 @@ it-handover-signer/
     "pending_dir": "pending",
     "signed_dir": "signed",
     "signature_placement": {
-        "page": -1,
-        "x": 320,
-        "y": 630,
-        "width": 210,
-        "height": 70,
-        "keep_aspect_ratio": true,
-        "add_timestamp": true,
-        "timestamp_x": 320,
-        "timestamp_y": 705,
-        "timestamp_fontsize": 7.5
+        "recipient": {
+            "page": -1,
+            "x": 320,
+            "y": 630,
+            "width": 210,
+            "height": 70,
+            "label": "Employee / Recipient",
+            "add_timestamp": true,
+            "timestamp_fontsize": 7.5
+        },
+        "issuer": {
+            "page": -1,
+            "x": 60,
+            "y": 630,
+            "width": 200,
+            "height": 70,
+            "label": "IT Admin / Issuer",
+            "add_timestamp": true,
+            "timestamp_fontsize": 7.5
+        }
     },
-    "auto_archive_pending": true
+    "auto_archive_pending": true,
+    "github_repo": "your-username/it-handover-signer",
+    "github_token": "ghp_...",
+    "github_branch": "main",
+    "auto_delete_github_pending": true,
+    "auto_upload_github_signed": true
 }
 ```
 

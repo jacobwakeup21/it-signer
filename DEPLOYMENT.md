@@ -33,6 +33,9 @@ When your laptop is restricted to a corporate subnet and cannot directly communi
    - The desktop dashboard QR code will automatically use the public URL.
    - Scan the QR code with any phone on 4G/5G/guest Wi-Fi to sign.
 
+> [!TIP]
+> **Clean Repository**: The `.gitignore` ensures that PDF files in `pending/` and `signed/` are never committed to GitHub. On Render startup, the app always starts with a clean, empty pending list. You can drag and drop PDFs directly into the web dashboard or connect your GitHub token in **Settings** to automatically sync and delete files.
+
 ---
 
 ## ⚡ Option 2: Cloudflare Quick Tunnel (Zero Cloud Setup)
