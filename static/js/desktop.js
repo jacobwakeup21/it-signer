@@ -1,5 +1,5 @@
 /**
- * Desktop Dashboard Management Script
+ * Desktop Dashboard Management Script with Visual Calibrator & Dual Signatures
  */
 
 let currentIp = '';
@@ -10,13 +10,30 @@ let currentDocQrUrl = '';
 let searchTerm = '';
 let sortMode = 'date_desc';
 
+// Calibrator State
+let calibActiveBox = 'recipient'; // 'recipient' or 'issuer'
+let calibPdfWidth = 595.32;
+let calibPdfHeight = 841.92;
+let calibFilename = '';
+let calibCoords = {
+    recipient: { x: 320, y: 630, width: 210, height: 70 },
+    issuer: { x: 60, y: 630, width: 200, height: 70 }
+};
+
+// GitHub Integration State
+let gitHubConfig = { is_configured: false, repo: '', branch: 'main' };
+let gitHubPendingFiles = [];
+
 document.addEventListener('DOMContentLoaded', () => {
     initNetworkControls();
     initDropZone();
+    initCalibratorInteractions();
     refreshDocuments();
+    checkGitHubStatus();
     
-    // Auto-refresh document list every 5 seconds
+    // Auto-refresh document list every 5 seconds & GitHub status every 15s
     setInterval(refreshDocuments, 5000);
+    setInterval(checkGitHubStatus, 15000);
 });
 
 function getBaseUrl() {
@@ -108,7 +125,9 @@ function sortAndRenderDocuments() {
     function sortFiles(list) {
         let filtered = list.filter(f => {
             if (!searchTerm) return true;
-            return f.name.toLowerCase().includes(searchTerm) || f.modified_formatted.toLowerCase().includes(searchTerm);
+            const metaStr = f.metadata ? `${f.metadata.employee_name || ''} ${f.metadata.email || ''} ${(f.metadata.hardware || []).join(' ')}` : '';
+            const full = `${f.name} ${f.modified_formatted} ${metaStr}`.toLowerCase();
+            return full.includes(searchTerm);
         });
 
         filtered.sort((a, b) => {
@@ -141,6 +160,10 @@ function renderPendingGrid(files) {
 
     container.innerHTML = files.map(file => {
         const directSignUrl = `${getBaseUrl()}/sign/${encodeURIComponent(file.name)}`;
+        const meta = file.metadata || {};
+        const employeeName = meta.employee_name;
+        const hwFirst = meta.hardware && meta.hardware.length > 0 ? meta.hardware[0] : null;
+
         return `
         <div class="doc-card bg-slate-800 border border-slate-700 rounded-2xl p-4 shadow-md flex flex-col justify-between space-y-3">
             <div class="flex items-start gap-3">
@@ -155,12 +178,27 @@ function renderPendingGrid(files) {
                 <!-- Info -->
                 <div class="flex-1 min-w-0">
                     <h4 class="text-xs font-bold text-white truncate" title="${file.name}">${file.name}</h4>
-                    <p class="text-[11px] text-slate-400 mt-1">${file.modified_formatted}</p>
+                    <p class="text-[11px] text-slate-400 mt-0.5">${file.modified_formatted}</p>
+
+                    <!-- Extracted Metadata Badges -->
+                    <div class="mt-1.5 flex flex-wrap gap-1">
+                        ${employeeName ? `
+                            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-sky-500/20 text-sky-300 text-[10px] font-semibold border border-sky-500/30 truncate max-w-full">
+                                <i data-lucide="user" class="w-2.5 h-2.5"></i> ${employeeName}
+                            </span>
+                        ` : ''}
+                        ${hwFirst ? `
+                            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 text-[10px] font-medium border border-indigo-500/30 truncate max-w-full" title="${hwFirst}">
+                                <i data-lucide="smartphone" class="w-2.5 h-2.5"></i> ${hwFirst.split('//')[0].trim()}
+                            </span>
+                        ` : ''}
+                    </div>
+
                     <div class="flex items-center gap-2 mt-2">
-                        <span class="px-2 py-0.5 rounded bg-slate-900 text-sky-400 text-[10px] font-mono border border-slate-700">
+                        <span class="px-1.5 py-0.5 rounded bg-slate-900 text-sky-400 text-[10px] font-mono border border-slate-700">
                             ${file.size_formatted}
                         </span>
-                        <span class="px-2 py-0.5 rounded bg-slate-900 text-slate-300 text-[10px] font-mono border border-slate-700">
+                        <span class="px-1.5 py-0.5 rounded bg-slate-900 text-slate-300 text-[10px] font-mono border border-slate-700">
                             ${file.page_count} ${file.page_count === 1 ? 'Page' : 'Pages'}
                         </span>
                     </div>
@@ -170,11 +208,14 @@ function renderPendingGrid(files) {
             <!-- Action buttons -->
             <div class="pt-2 border-t border-slate-700/60 flex items-center gap-1.5">
                 <button onclick="showDocQr('${file.name}', '${directSignUrl}')" class="flex-1 py-1.5 bg-sky-600/20 hover:bg-sky-600/30 text-sky-400 border border-sky-500/30 rounded-lg text-xs font-medium transition flex items-center justify-center gap-1">
-                    <i data-lucide="qr-code" class="w-3.5 h-3.5"></i> Direct QR
+                    <i data-lucide="qr-code" class="w-3.5 h-3.5"></i> QR
                 </button>
                 <a href="/sign/${encodeURIComponent(file.name)}" class="flex-1 py-1.5 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-xs font-medium transition flex items-center justify-center gap-1">
                     <i data-lucide="pen" class="w-3.5 h-3.5"></i> Sign
                 </a>
+                <button onclick="openCalibratorModal('${file.name}')" class="p-1.5 bg-slate-700/70 hover:bg-slate-700 text-sky-300 rounded-lg text-xs transition" title="Calibrate placement on this PDF">
+                    <i data-lucide="move" class="w-3.5 h-3.5"></i>
+                </button>
                 <a href="${file.download_url}" target="_blank" class="p-1.5 bg-slate-700/70 hover:bg-slate-700 text-slate-300 rounded-lg text-xs transition" title="Download original">
                     <i data-lucide="download" class="w-3.5 h-3.5"></i>
                 </a>
@@ -203,7 +244,11 @@ function renderSignedGrid(files) {
         return;
     }
 
-    container.innerHTML = files.map(file => `
+    container.innerHTML = files.map(file => {
+        const meta = file.metadata || {};
+        const employeeName = meta.employee_name;
+
+        return `
         <div class="doc-card bg-slate-800 border border-slate-700 rounded-2xl p-4 shadow-md flex flex-col justify-between space-y-3">
             <div class="flex items-start gap-3">
                 <!-- Thumbnail showing signature -->
@@ -217,10 +262,19 @@ function renderSignedGrid(files) {
                 <!-- Info -->
                 <div class="flex-1 min-w-0">
                     <h4 class="text-xs font-bold text-white truncate" title="${file.name}">${file.name}</h4>
-                    <p class="text-[11px] text-slate-400 mt-1">${file.modified_formatted}</p>
+                    <p class="text-[11px] text-slate-400 mt-0.5">${file.modified_formatted}</p>
+                    
+                    ${employeeName ? `
+                        <div class="mt-1">
+                            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[10px] font-semibold border border-emerald-500/30 truncate max-w-full">
+                                <i data-lucide="user" class="w-2.5 h-2.5"></i> ${employeeName}
+                            </span>
+                        </div>
+                    ` : ''}
+
                     <div class="flex items-center gap-2 mt-2">
                         <span class="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 text-[10px] font-semibold flex items-center gap-1 border border-emerald-500/20">
-                            <i data-lucide="check" class="w-3 h-3"></i> Completed
+                            <i data-lucide="check" class="w-3 h-3"></i> Signed
                         </span>
                         <span class="text-[10px] text-slate-400 font-mono">${file.size_formatted}</span>
                     </div>
@@ -240,28 +294,68 @@ function renderSignedGrid(files) {
                 </button>
             </div>
         </div>
-    `).join('');
+        `;
+    }).join('');
 
     if (window.lucide) lucide.createIcons();
 }
 
 async function deleteDocument(folder, filename) {
-    if (!confirm(`Are you sure you want to remove "${filename}"?`)) {
+    let deleteFromGh = false;
+    let confirmMsg = `Are you sure you want to remove "${filename}"?`;
+    
+    if (folder === 'pending' && gitHubConfig && gitHubConfig.is_configured) {
+        confirmMsg = `Remove "${filename}" from pending documents?`;
+    }
+
+    if (!confirm(confirmMsg)) {
         return;
     }
 
+    if (folder === 'pending' && gitHubConfig && gitHubConfig.is_configured) {
+        deleteFromGh = confirm(`Do you also want to delete "${filename}" from the GitHub repository?`);
+    }
+
     try {
-        const res = await fetch(`/api/delete/${folder}/${encodeURIComponent(filename)}`, {
+        const res = await fetch(`/api/delete/${folder}/${encodeURIComponent(filename)}?delete_github=${deleteFromGh}`, {
             method: 'POST'
         });
         const data = await res.json();
         if (data.success) {
             refreshDocuments();
+            if (gitHubConfig && gitHubConfig.is_configured) checkGitHubStatus();
         } else {
             alert(`Error deleting document: ${data.error}`);
         }
     } catch (err) {
         alert(`Failed to delete document: ${err.message}`);
+    }
+}
+
+async function clearAllPendingDocs() {
+    if (!confirm('Are you sure you want to remove ALL local pending documents?')) {
+        return;
+    }
+
+    let clearGh = false;
+    if (gitHubConfig && gitHubConfig.is_configured) {
+        clearGh = confirm('Do you also want to clear all pending files from the GitHub repository?');
+    }
+
+    try {
+        if (clearGh) {
+            await fetch('/api/github/clear-pending', { method: 'POST' });
+        }
+        const res = await fetch('/api/clear/pending', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+            refreshDocuments();
+            if (gitHubConfig && gitHubConfig.is_configured) checkGitHubStatus();
+        } else {
+            alert(`Error: ${data.error}`);
+        }
+    } catch (err) {
+        alert(`Failed to clear pending documents: ${err.message}`);
     }
 }
 
@@ -355,7 +449,227 @@ async function handleFileUpload(file) {
     }
 }
 
-// Modal Handlers
+// ----------------- VISUAL CALIBRATOR LOGIC -----------------
+
+async function openCalibratorModal(targetFilename) {
+    try {
+        const cfgRes = await fetch('/api/config');
+        const config = await cfgRes.json();
+        
+        const placement = config.signature_placement || {};
+        if (placement.recipient) {
+            calibCoords.recipient = { ...placement.recipient };
+            calibCoords.issuer = { ...(placement.issuer || calibCoords.issuer) };
+        } else if (placement.x) {
+            calibCoords.recipient = { ...placement };
+        }
+
+        calibFilename = targetFilename || (pendingFiles.length > 0 ? pendingFiles[0].name : (signedFiles.length > 0 ? signedFiles[0].name : ''));
+        const folder = pendingFiles.some(f => f.name === calibFilename) ? 'pending' : (signedFiles.some(f => f.name === calibFilename) ? 'signed' : 'pending');
+
+        if (calibFilename) {
+            const dimRes = await fetch(`/api/page-dimensions/${folder}/${encodeURIComponent(calibFilename)}/-1`);
+            const dimData = await dimRes.json();
+            if (dimData.success) {
+                calibPdfWidth = dimData.width || 595.32;
+                calibPdfHeight = dimData.height || 841.92;
+            }
+            document.getElementById('calibPageImg').src = `/api/preview/${folder}/${encodeURIComponent(calibFilename)}/-1?zoom=1.5&t=${Date.now()}`;
+        } else {
+            calibPdfWidth = 595.32;
+            calibPdfHeight = 841.92;
+            document.getElementById('calibPageImg').src = '';
+        }
+
+        const modal = document.getElementById('calibratorModal');
+        modal.classList.remove('hidden');
+        modal.classList.add('flex');
+
+        selectCalibBox(calibActiveBox);
+        setTimeout(updateCalibratorBoxVisuals, 100);
+    } catch (err) {
+        console.error('Error opening calibrator:', err);
+    }
+}
+
+function closeCalibratorModal() {
+    const modal = document.getElementById('calibratorModal');
+    modal.classList.add('hidden');
+    modal.classList.remove('flex');
+}
+
+function selectCalibBox(role) {
+    calibActiveBox = role;
+    const tabRecip = document.getElementById('calibTabRecip');
+    const tabIssuer = document.getElementById('calibTabIssuer');
+
+    if (role === 'recipient') {
+        tabRecip.className = 'px-3 py-1 rounded-lg font-semibold bg-sky-600 text-white flex items-center gap-1.5 shadow';
+        tabIssuer.className = 'px-3 py-1 rounded-lg font-semibold bg-slate-700 text-slate-300 hover:text-white flex items-center gap-1.5';
+    } else {
+        tabIssuer.className = 'px-3 py-1 rounded-lg font-semibold bg-indigo-600 text-white flex items-center gap-1.5 shadow';
+        tabRecip.className = 'px-3 py-1 rounded-lg font-semibold bg-slate-700 text-slate-300 hover:text-white flex items-center gap-1.5';
+    }
+
+    updateCalibratorReadout();
+}
+
+function updateCalibratorReadout() {
+    const coords = calibCoords[calibActiveBox];
+    document.getElementById('calib_read_x').textContent = Math.round(coords.x);
+    document.getElementById('calib_read_y').textContent = Math.round(coords.y);
+    document.getElementById('calib_read_w').textContent = Math.round(coords.width);
+    document.getElementById('calib_read_h').textContent = Math.round(coords.height);
+}
+
+function updateCalibratorBoxVisuals() {
+    const container = document.getElementById('calibContainer');
+    if (!container) return;
+
+    const cWidth = container.offsetWidth;
+    const cHeight = container.offsetHeight;
+    if (!cWidth || !cHeight) return;
+
+    const scaleX = cWidth / calibPdfWidth;
+    const scaleY = cHeight / calibPdfHeight;
+
+    // Position Recipient box
+    const boxR = document.getElementById('boxRecipient');
+    const cr = calibCoords.recipient;
+    boxR.style.left = `${cr.x * scaleX}px`;
+    boxR.style.top = `${cr.y * scaleY}px`;
+    boxR.style.width = `${cr.width * scaleX}px`;
+    boxR.style.height = `${cr.height * scaleY}px`;
+    document.getElementById('boxRecipCoords').textContent = `${Math.round(cr.x)}, ${Math.round(cr.y)}`;
+
+    // Position Issuer box
+    const boxI = document.getElementById('boxIssuer');
+    const ci = calibCoords.issuer;
+    boxI.style.left = `${ci.x * scaleX}px`;
+    boxI.style.top = `${ci.y * scaleY}px`;
+    boxI.style.width = `${ci.width * scaleX}px`;
+    boxI.style.height = `${ci.height * scaleY}px`;
+    document.getElementById('boxIssuerCoords').textContent = `${Math.round(ci.x)}, ${Math.round(ci.y)}`;
+
+    updateCalibratorReadout();
+}
+
+function initCalibratorInteractions() {
+    ['boxRecipient', 'boxIssuer'].forEach(boxId => {
+        const box = document.getElementById(boxId);
+        if (!box) return;
+
+        const role = boxId === 'boxRecipient' ? 'recipient' : 'issuer';
+        let isDragging = false;
+        let isResizing = false;
+        let startX, startY, startLeft, startTop, startW, startH;
+
+        box.addEventListener('mousedown', (e) => {
+            selectCalibBox(role);
+            if (e.target.classList.contains('resize-handle')) {
+                isResizing = true;
+            } else {
+                isDragging = true;
+            }
+            startX = e.clientX;
+            startY = e.clientY;
+            startLeft = parseFloat(box.style.left) || 0;
+            startTop = parseFloat(box.style.top) || 0;
+            startW = parseFloat(box.style.width) || 100;
+            startH = parseFloat(box.style.height) || 40;
+            e.preventDefault();
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (!isDragging && !isResizing) return;
+            const container = document.getElementById('calibContainer');
+            const scaleX = container.offsetWidth / calibPdfWidth;
+            const scaleY = container.offsetHeight / calibPdfHeight;
+
+            const dx = e.clientX - startX;
+            const dy = e.clientY - startY;
+
+            if (isDragging) {
+                let newL = Math.max(0, Math.min(startLeft + dx, container.offsetWidth - parseFloat(box.style.width)));
+                let newT = Math.max(0, Math.min(startTop + dy, container.offsetHeight - parseFloat(box.style.height)));
+                box.style.left = `${newL}px`;
+                box.style.top = `${newT}px`;
+                calibCoords[role].x = newL / scaleX;
+                calibCoords[role].y = newT / scaleY;
+            } else if (isResizing) {
+                let newW = Math.max(40, startW + dx);
+                let newH = Math.max(20, startH + dy);
+                box.style.width = `${newW}px`;
+                box.style.height = `${newH}px`;
+                calibCoords[role].width = newW / scaleX;
+                calibCoords[role].height = newH / scaleY;
+            }
+
+            updateCalibratorBoxVisuals();
+        });
+
+        window.addEventListener('mouseup', () => {
+            isDragging = false;
+            isResizing = false;
+        });
+    });
+}
+
+function applyCalibPreset(preset) {
+    if (preset === 'dual_bottom') {
+        calibCoords.recipient = { x: 320, y: 630, width: 210, height: 70 };
+        calibCoords.issuer = { x: 60, y: 630, width: 200, height: 70 };
+    } else if (preset === 'right_only') {
+        calibCoords.recipient = { x: 320, y: 630, width: 220, height: 80 };
+        calibCoords.issuer = { x: 0, y: 0, width: 0, height: 0 };
+    }
+    updateCalibratorBoxVisuals();
+}
+
+async function saveCalibratorPlacement() {
+    try {
+        const res = await fetch('/api/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                signature_placement: {
+                    recipient: {
+                        page: -1,
+                        x: Math.round(calibCoords.recipient.x),
+                        y: Math.round(calibCoords.recipient.y),
+                        width: Math.round(calibCoords.recipient.width),
+                        height: Math.round(calibCoords.recipient.height),
+                        label: 'Employee / Recipient',
+                        add_timestamp: true,
+                        timestamp_fontsize: 7.5
+                    },
+                    issuer: {
+                        page: -1,
+                        x: Math.round(calibCoords.issuer.x),
+                        y: Math.round(calibCoords.issuer.y),
+                        width: Math.round(calibCoords.issuer.width),
+                        height: Math.round(calibCoords.issuer.height),
+                        label: 'IT Admin / Issuer',
+                        add_timestamp: true,
+                        timestamp_fontsize: 7.5
+                    }
+                }
+            })
+        });
+        const data = await res.json();
+        if (data.success) {
+            closeCalibratorModal();
+            alert('Signature box coordinates saved successfully!');
+            document.getElementById('badge_recip_coords').textContent = `${Math.round(calibCoords.recipient.x)}, ${Math.round(calibCoords.recipient.y)} (${Math.round(calibCoords.recipient.width)}×${Math.round(calibCoords.recipient.height)})`;
+            document.getElementById('badge_issuer_coords').textContent = `${Math.round(calibCoords.issuer.x)}, ${Math.round(calibCoords.issuer.y)} (${Math.round(calibCoords.issuer.width)}×${Math.round(calibCoords.issuer.height)})`;
+        }
+    } catch (e) {
+        alert('Failed to save coordinates: ' + e.message);
+    }
+}
+
+// ----------------- SETTINGS & MODALS -----------------
+
 function showDocQr(filename, url) {
     currentDocQrUrl = url;
     document.getElementById('docQrFilename').textContent = filename;
@@ -400,15 +714,39 @@ async function openSettingsModal() {
         const res = await fetch('/api/config');
         const config = await res.json();
         const placement = config.signature_placement || {};
+        const recip = placement.recipient || placement || {};
+        const issuer = placement.issuer || {};
 
-        document.getElementById('setting_x').value = placement.x || 320;
-        document.getElementById('setting_y').value = placement.y || 630;
-        document.getElementById('setting_w').value = placement.width || 210;
-        document.getElementById('setting_h').value = placement.height || 70;
+        document.getElementById('setting_x').value = recip.x || 320;
+        document.getElementById('setting_y').value = recip.y || 630;
+        document.getElementById('setting_w').value = recip.width || 210;
+        document.getElementById('setting_h').value = recip.height || 70;
+
+        document.getElementById('setting_issuer_x').value = issuer.x || 60;
+        document.getElementById('setting_issuer_y').value = issuer.y || 630;
+        document.getElementById('setting_issuer_w').value = issuer.width || 200;
+        document.getElementById('setting_issuer_h').value = issuer.height || 70;
+
         document.getElementById('setting_public_url').value = config.public_url || '';
         document.getElementById('setting_pending_dir').value = config.pending_dir || 'pending';
         document.getElementById('setting_signed_dir').value = config.signed_dir || 'signed';
-        document.getElementById('setting_timestamp').checked = placement.add_timestamp !== false;
+
+        // GitHub fields
+        const ghRepoInput = document.getElementById('setting_github_repo');
+        const ghTokenInput = document.getElementById('setting_github_token');
+        const ghBranchInput = document.getElementById('setting_github_branch');
+        const ghAutoDelInput = document.getElementById('setting_gh_auto_delete');
+        const ghAutoUpInput = document.getElementById('setting_gh_auto_upload');
+        const ghTestResult = document.getElementById('ghSettingsTestResult');
+
+        if (ghRepoInput) ghRepoInput.value = config.github_repo || '';
+        if (ghTokenInput) ghTokenInput.value = config.github_token || '';
+        if (ghBranchInput) ghBranchInput.value = config.github_branch || 'main';
+        if (ghAutoDelInput) ghAutoDelInput.checked = config.auto_delete_github_pending !== false;
+        if (ghAutoUpInput) ghAutoUpInput.checked = config.auto_upload_github_signed !== false;
+        if (ghTestResult) ghTestResult.textContent = '';
+
+        document.getElementById('setting_timestamp').checked = recip.add_timestamp !== false;
         document.getElementById('setting_archive').checked = config.auto_archive_pending !== false;
 
         const modal = document.getElementById('settingsModal');
@@ -431,21 +769,45 @@ async function saveSettings(e) {
     const pendingDir = document.getElementById('setting_pending_dir').value.trim();
     const signedDir = document.getElementById('setting_signed_dir').value.trim();
 
+    const ghRepo = (document.getElementById('setting_github_repo') ? document.getElementById('setting_github_repo').value.trim() : '');
+    const ghToken = (document.getElementById('setting_github_token') ? document.getElementById('setting_github_token').value.trim() : '');
+    const ghBranch = (document.getElementById('setting_github_branch') ? document.getElementById('setting_github_branch').value.trim() : 'main');
+    const ghAutoDelete = document.getElementById('setting_gh_auto_delete') ? document.getElementById('setting_gh_auto_delete').checked : true;
+    const ghAutoUpload = document.getElementById('setting_gh_auto_upload') ? document.getElementById('setting_gh_auto_upload').checked : true;
+
     const payload = {
         public_url: pubUrl,
         pending_dir: pendingDir || 'pending',
         signed_dir: signedDir || 'signed',
+        github_repo: ghRepo,
+        github_token: ghToken,
+        github_branch: ghBranch || 'main',
+        auto_delete_github_pending: ghAutoDelete,
+        auto_upload_github_signed: ghAutoUpload,
+        dual_signature: true,
         signature_placement: {
-            page: -1,
-            x: parseFloat(document.getElementById('setting_x').value) || 320,
-            y: parseFloat(document.getElementById('setting_y').value) || 630,
-            width: parseFloat(document.getElementById('setting_w').value) || 210,
-            height: parseFloat(document.getElementById('setting_h').value) || 70,
-            keep_aspect_ratio: true,
-            add_timestamp: document.getElementById('setting_timestamp').checked,
-            timestamp_x: parseFloat(document.getElementById('setting_x').value) || 320,
-            timestamp_y: (parseFloat(document.getElementById('setting_y').value) || 630) + (parseFloat(document.getElementById('setting_h').value) || 70) + 10,
-            timestamp_fontsize: 7.5
+            recipient: {
+                page: -1,
+                x: parseFloat(document.getElementById('setting_x').value) || 320,
+                y: parseFloat(document.getElementById('setting_y').value) || 630,
+                width: parseFloat(document.getElementById('setting_w').value) || 210,
+                height: parseFloat(document.getElementById('setting_h').value) || 70,
+                label: 'Employee / Recipient',
+                keep_aspect_ratio: true,
+                add_timestamp: document.getElementById('setting_timestamp').checked,
+                timestamp_fontsize: 7.5
+            },
+            issuer: {
+                page: -1,
+                x: parseFloat(document.getElementById('setting_issuer_x').value) || 60,
+                y: parseFloat(document.getElementById('setting_issuer_y').value) || 630,
+                width: parseFloat(document.getElementById('setting_issuer_w').value) || 200,
+                height: parseFloat(document.getElementById('setting_issuer_h').value) || 70,
+                label: 'IT Admin / Issuer',
+                keep_aspect_ratio: true,
+                add_timestamp: document.getElementById('setting_timestamp').checked,
+                timestamp_fontsize: 7.5
+            }
         },
         auto_archive_pending: document.getElementById('setting_archive').checked
     };
@@ -465,8 +827,239 @@ async function saveSettings(e) {
                 updateHeroQr();
             }
             refreshDocuments();
+            checkGitHubStatus();
         }
     } catch (err) {
         alert(`Failed to save settings: ${err.message}`);
+    }
+}
+
+// ----------------- GITHUB REPOSITORY MANAGER -----------------
+
+async function checkGitHubStatus() {
+    try {
+        const res = await fetch('/api/github/status');
+        const data = await res.json();
+        gitHubConfig = data;
+
+        const badge = document.getElementById('ghPendingCountBadge');
+        if (data.is_configured) {
+            const pRes = await fetch('/api/github/pending');
+            const pData = await pRes.json();
+            if (pData.success && Array.isArray(pData.files)) {
+                gitHubPendingFiles = pData.files;
+                if (badge) badge.textContent = pData.files.length;
+            } else {
+                if (badge) badge.textContent = '0';
+            }
+        } else {
+            if (badge) badge.textContent = 'Not setup';
+        }
+    } catch (err) {
+        console.error('Error checking GitHub status:', err);
+    }
+}
+
+function openGitHubManagerModal() {
+    const modal = document.getElementById('githubModal');
+    if (!modal) return;
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+    refreshGitHubPendingFiles();
+}
+
+function closeGitHubManagerModal() {
+    const modal = document.getElementById('githubModal');
+    if (!modal) return;
+    modal.classList.add('hidden');
+    modal.classList.remove('flex');
+}
+
+async function refreshGitHubPendingFiles() {
+    const container = document.getElementById('ghFileListContainer');
+    const statusDot = document.getElementById('ghStatusDot');
+    const statusText = document.getElementById('ghStatusText');
+    const setupPrompt = document.getElementById('ghSetupPrompt');
+    const clearBtn = document.getElementById('ghClearAllBtn');
+
+    if (!container) return;
+
+    container.innerHTML = `
+        <div class="py-8 text-center text-slate-500 text-xs">
+            <i data-lucide="loader-2" class="w-5 h-5 animate-spin mx-auto mb-2 text-sky-400"></i>
+            Loading GitHub pending files...
+        </div>
+    `;
+    if (window.lucide) lucide.createIcons();
+
+    try {
+        const statusRes = await fetch('/api/github/status');
+        const statusData = await statusRes.json();
+        gitHubConfig = statusData;
+
+        if (!statusData.is_configured) {
+            if (statusDot) statusDot.className = 'w-2.5 h-2.5 rounded-full bg-amber-400';
+            if (statusText) statusText.textContent = 'GitHub integration not configured';
+            if (setupPrompt) setupPrompt.classList.remove('hidden');
+            if (clearBtn) {
+                clearBtn.disabled = true;
+                clearBtn.classList.add('opacity-50', 'cursor-not-allowed');
+            }
+
+            container.innerHTML = `
+                <div class="bg-slate-950/40 border border-slate-800 rounded-xl p-6 text-center space-y-2">
+                    <i data-lucide="github" class="w-8 h-8 mx-auto text-slate-600"></i>
+                    <h4 class="text-xs font-bold text-slate-300">GitHub Repository Not Connected</h4>
+                    <p class="text-[11px] text-slate-500 max-w-sm mx-auto">Configure your repository and Personal Access Token in Settings to view and delete files sitting in GitHub's pending folder.</p>
+                </div>
+            `;
+            if (window.lucide) lucide.createIcons();
+            return;
+        }
+
+        if (setupPrompt) setupPrompt.classList.add('hidden');
+        if (clearBtn) {
+            clearBtn.disabled = false;
+            clearBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+        }
+        if (statusDot) statusDot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-400';
+        if (statusText) statusText.innerHTML = `Connected to <strong class="text-white font-mono">${statusData.repo}</strong> (<span class="text-sky-300 font-mono">${statusData.branch}</span>)`;
+
+        const res = await fetch('/api/github/pending');
+        const data = await res.json();
+
+        if (!data.success) {
+            throw new Error(data.error || 'Failed to load GitHub pending files');
+        }
+
+        gitHubPendingFiles = data.files || [];
+        const badge = document.getElementById('ghPendingCountBadge');
+        if (badge) badge.textContent = gitHubPendingFiles.length;
+
+        if (gitHubPendingFiles.length === 0) {
+            container.innerHTML = `
+                <div class="bg-slate-950/40 border border-slate-800 rounded-xl p-8 text-center space-y-2">
+                    <i data-lucide="check-circle-2" class="w-8 h-8 mx-auto text-emerald-400"></i>
+                    <h4 class="text-xs font-bold text-slate-200">GitHub Pending Folder is Clean!</h4>
+                    <p class="text-[11px] text-slate-400">No pending files found on GitHub repository.</p>
+                </div>
+            `;
+            if (window.lucide) lucide.createIcons();
+            return;
+        }
+
+        container.innerHTML = gitHubPendingFiles.map(file => {
+            return `
+            <div class="bg-slate-950/70 border border-slate-800 hover:border-slate-700 rounded-xl p-3 flex items-center justify-between gap-3 transition">
+                <div class="flex items-center gap-3 min-w-0">
+                    <div class="w-9 h-9 rounded-lg bg-sky-500/10 border border-sky-500/20 text-sky-400 flex items-center justify-center flex-shrink-0">
+                        <i data-lucide="file-text" class="w-4 h-4"></i>
+                    </div>
+                    <div class="min-w-0">
+                        <h4 class="text-xs font-bold text-white truncate" title="${file.name}">${file.name}</h4>
+                        <div class="flex items-center gap-2 mt-0.5 text-[10px] text-slate-400 font-mono">
+                            <span>${file.size_formatted}</span>
+                            <span>•</span>
+                            <a href="${file.html_url || '#'}" target="_blank" class="text-sky-400 hover:underline flex items-center gap-0.5">
+                                View on GitHub <i data-lucide="external-link" class="w-2.5 h-2.5"></i>
+                            </a>
+                        </div>
+                    </div>
+                </div>
+                <button onclick="deleteGitHubFile('${file.name}')" class="px-3 py-1.5 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 rounded-lg text-xs font-semibold transition flex items-center gap-1 flex-shrink-0" title="Delete from GitHub repository">
+                    <i data-lucide="trash-2" class="w-3.5 h-3.5"></i> Delete
+                </button>
+            </div>
+            `;
+        }).join('');
+
+        if (window.lucide) lucide.createIcons();
+    } catch (err) {
+        if (statusDot) statusDot.className = 'w-2.5 h-2.5 rounded-full bg-rose-400';
+        if (statusText) statusText.textContent = `GitHub Error: ${err.message}`;
+        container.innerHTML = `
+            <div class="bg-rose-950/20 border border-rose-800/40 rounded-xl p-4 text-center text-xs text-rose-300">
+                ${err.message}
+            </div>
+        `;
+    }
+}
+
+async function deleteGitHubFile(filename) {
+    if (!confirm(`Are you sure you want to permanently delete "${filename}" from the GitHub repository?`)) {
+        return;
+    }
+
+    try {
+        const res = await fetch(`/api/github/delete/pending/${encodeURIComponent(filename)}`, {
+            method: 'POST'
+        });
+        const data = await res.json();
+        if (data.success) {
+            refreshGitHubPendingFiles();
+            refreshDocuments();
+            checkGitHubStatus();
+        } else {
+            alert(`Failed to delete from GitHub: ${data.error}`);
+        }
+    } catch (err) {
+        alert(`Error: ${err.message}`);
+    }
+}
+
+async function clearAllGitHubPendingFiles() {
+    if (!confirm('Are you sure you want to permanently delete ALL files from the GitHub pending folder?')) {
+        return;
+    }
+
+    try {
+        const res = await fetch('/api/github/clear-pending', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+            alert(data.message);
+            refreshGitHubPendingFiles();
+            refreshDocuments();
+            checkGitHubStatus();
+        } else {
+            alert(`Error: ${data.error}`);
+        }
+    } catch (err) {
+        alert(`Failed to clear GitHub pending: ${err.message}`);
+    }
+}
+
+async function testGitHubConnectionFromSettings() {
+    const repo = document.getElementById('setting_github_repo').value.trim();
+    const token = document.getElementById('setting_github_token').value.trim();
+    const resultEl = document.getElementById('ghSettingsTestResult');
+
+    if (!repo) {
+        resultEl.className = 'text-[11px] font-medium text-amber-400 truncate py-1.5';
+        resultEl.textContent = 'Please enter a repository (owner/repo).';
+        return;
+    }
+
+    resultEl.className = 'text-[11px] font-medium text-sky-400 truncate py-1.5';
+    resultEl.innerHTML = '<i data-lucide="loader-2" class="w-3 h-3 animate-spin inline mr-1"></i> Testing...';
+    if (window.lucide) lucide.createIcons();
+
+    try {
+        const res = await fetch('/api/github/test', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ repo, token })
+        });
+        const data = await res.json();
+
+        if (data.success) {
+            resultEl.className = 'text-[11px] font-medium text-emerald-400 truncate py-1.5';
+            resultEl.textContent = `✓ Connected to ${data.full_name} (${data.default_branch})`;
+        } else {
+            resultEl.className = 'text-[11px] font-medium text-rose-400 truncate py-1.5';
+            resultEl.textContent = `✕ ${data.error}`;
+        }
+    } catch (err) {
+        resultEl.className = 'text-[11px] font-medium text-rose-400 truncate py-1.5';
+        resultEl.textContent = `✕ Connection failed: ${err.message}`;
     }
 }
