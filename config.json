@@ -28,5 +28,10 @@
             "timestamp_fontsize": 7.5
         }
     },
-    "auto_archive_pending": true
+    "auto_archive_pending": true,
+    "github_repo": "",
+    "github_token": "",
+    "github_branch": "main",
+    "auto_delete_github_pending": true,
+    "auto_upload_github_signed": true
 }

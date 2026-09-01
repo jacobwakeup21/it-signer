@@ -7,6 +7,8 @@ import base64
 import socket
 import logging
 import zipfile
+import urllib.request
+import urllib.error
 from datetime import datetime
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, send_file, send_from_directory, redirect, url_for
@@ -51,7 +53,12 @@ DEFAULT_CONFIG = {
             "timestamp_fontsize": 7.5
         }
     },
-    "auto_archive_pending": True
+    "auto_archive_pending": True,
+    "github_repo": "",
+    "github_token": "",
+    "github_branch": "main",
+    "auto_delete_github_pending": True,
+    "auto_upload_github_signed": True
 }
 
 def load_config():
@@ -132,6 +139,167 @@ def format_file_size(size_bytes):
         return f"{size_bytes / 1024:.1f} KB"
     else:
         return f"{size_bytes / (1024 * 1024):.2f} MB"
+
+def get_github_config():
+    """Retrieve normalized GitHub settings from config or environment variables."""
+    cfg = load_config()
+    raw_repo = os.environ.get('GITHUB_REPO') or cfg.get('github_repo', '')
+    token = os.environ.get('GITHUB_TOKEN') or cfg.get('github_token', '')
+    branch = os.environ.get('GITHUB_BRANCH') or cfg.get('github_branch', 'main')
+    auto_delete = cfg.get('auto_delete_github_pending', True)
+    auto_upload = cfg.get('auto_upload_github_signed', True)
+
+    repo = raw_repo.strip()
+    if repo.startswith('http://') or repo.startswith('https://'):
+        repo = re.sub(r'^https?://[^/]+/', '', repo)
+    repo = re.sub(r'\.git$', '', repo).strip('/')
+
+    return {
+        "repo": repo,
+        "token": token.strip(),
+        "branch": branch.strip() or "main",
+        "auto_delete_github_pending": auto_delete,
+        "auto_upload_github_signed": auto_upload,
+        "is_configured": bool(repo and token)
+    }
+
+def github_api_request(method, endpoint, data=None, token=None):
+    """Execute a GitHub REST API v3 request."""
+    gh_cfg = get_github_config()
+    auth_token = token or gh_cfg['token']
+    if not auth_token:
+        raise ValueError("GitHub Personal Access Token is not configured.")
+
+    url = f"https://api.github.com/{endpoint.lstrip('/')}"
+    headers = {
+        "Authorization": f"Bearer {auth_token}",
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "IT-Handover-Signer/1.0",
+        "X-GitHub-Api-Version": "2022-11-28"
+    }
+
+    body_bytes = None
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+        body_bytes = json.dumps(data).encode('utf-8')
+
+    req = urllib.request.Request(url, data=body_bytes, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            resp_body = resp.read().decode('utf-8')
+            return json.loads(resp_body) if resp_body else {}
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode('utf-8')
+        try:
+            err_json = json.loads(err_body)
+            msg = err_json.get('message', err_body)
+        except Exception:
+            msg = err_body
+        raise RuntimeError(f"GitHub API error ({e.code}): {msg}")
+    except Exception as e:
+        raise RuntimeError(f"Network error connecting to GitHub: {str(e)}")
+
+def github_test_connection(repo=None, token=None):
+    """Test connection to GitHub repository."""
+    gh = get_github_config()
+    target_repo = repo or gh['repo']
+    target_token = token or gh['token']
+    if not target_repo or not target_token:
+        return {"success": False, "error": "Both repository (owner/repo) and GitHub token must be provided."}
+
+    clean_repo = target_repo.strip()
+    if clean_repo.startswith('http://') or clean_repo.startswith('https://'):
+        clean_repo = re.sub(r'^https?://[^/]+/', '', clean_repo)
+    clean_repo = re.sub(r'\.git$', '', clean_repo).strip('/')
+
+    try:
+        data = github_api_request("GET", f"repos/{clean_repo}", token=target_token)
+        return {
+            "success": True,
+            "full_name": data.get("full_name"),
+            "default_branch": data.get("default_branch", "main"),
+            "private": data.get("private", False),
+            "message": f"Successfully connected to GitHub repository '{clean_repo}'"
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+def github_list_pending_files():
+    """List all files in GitHub repo's pending directory."""
+    gh = get_github_config()
+    if not gh['is_configured']:
+        return []
+    try:
+        endpoint = f"repos/{gh['repo']}/contents/pending?ref={gh['branch']}"
+        items = github_api_request("GET", endpoint)
+        if isinstance(items, list):
+            files = []
+            for item in items:
+                if item.get('type') == 'file' and item.get('name') != '.gitkeep':
+                    files.append({
+                        "name": item.get('name'),
+                        "path": item.get('path'),
+                        "sha": item.get('sha'),
+                        "size": item.get('size', 0),
+                        "size_formatted": format_file_size(item.get('size', 0)),
+                        "download_url": item.get('download_url'),
+                        "html_url": item.get('html_url')
+                    })
+            return files
+        return []
+    except Exception as e:
+        if "404" in str(e):
+            return []
+        print(f"Error listing GitHub pending files: {e}")
+        return []
+
+def github_delete_file(path_in_repo, sha=None, commit_msg=None):
+    """Delete a file from GitHub repository."""
+    gh = get_github_config()
+    if not gh['is_configured']:
+        raise ValueError("GitHub integration is not configured.")
+
+    clean_path = path_in_repo.lstrip('/')
+    if not sha:
+        endpoint = f"repos/{gh['repo']}/contents/{clean_path}?ref={gh['branch']}"
+        item = github_api_request("GET", endpoint)
+        sha = item.get('sha')
+        if not sha:
+            raise RuntimeError(f"Could not retrieve SHA for {clean_path}")
+
+    filename = Path(clean_path).name
+    msg = commit_msg or f"Delete {filename} from pending folder via IT Handover Signer"
+    payload = {
+        "message": msg,
+        "sha": sha,
+        "branch": gh['branch']
+    }
+    return github_api_request("DELETE", f"repos/{gh['repo']}/contents/{clean_path}", data=payload)
+
+def github_upload_file(path_in_repo, file_bytes, commit_msg=None):
+    """Upload or update a file in GitHub repository."""
+    gh = get_github_config()
+    if not gh['is_configured']:
+        raise ValueError("GitHub integration is not configured.")
+
+    clean_path = path_in_repo.lstrip('/')
+    filename = Path(clean_path).name
+    b64_content = base64.b64encode(file_bytes).decode('ascii')
+
+    payload = {
+        "message": commit_msg or f"Add signed document {filename} via IT Handover Signer",
+        "content": b64_content,
+        "branch": gh['branch']
+    }
+
+    try:
+        existing = github_api_request("GET", f"repos/{gh['repo']}/contents/{clean_path}?ref={gh['branch']}")
+        if isinstance(existing, dict) and "sha" in existing:
+            payload["sha"] = existing["sha"]
+    except Exception:
+        pass
+
+    return github_api_request("PUT", f"repos/{gh['repo']}/contents/{clean_path}", data=payload)
 
 def get_pdf_metadata(filepath):
     """Extract page count and basic metadata from PDF using PyMuPDF."""
@@ -634,11 +802,32 @@ def api_sign(filename):
                 except Exception:
                     pass
 
+        # GitHub Automated Sync (if configured)
+        gh_cfg = get_github_config()
+        gh_status = {"uploaded_signed": False, "deleted_pending": False}
+        if gh_cfg['is_configured']:
+            if gh_cfg['auto_upload_github_signed']:
+                try:
+                    with open(output_path, 'rb') as sf:
+                        signed_bytes = sf.read()
+                    github_upload_file(f"signed/{signed_filename}", signed_bytes, f"Add signed document: {signed_filename}")
+                    gh_status["uploaded_signed"] = True
+                except Exception as ge:
+                    print(f"Notice: could not upload signed PDF to GitHub: {ge}")
+
+            if gh_cfg['auto_delete_github_pending']:
+                try:
+                    github_delete_file(f"pending/{filename}", commit_msg=f"Delete pending signed document: {filename}")
+                    gh_status["deleted_pending"] = True
+                except Exception as ge:
+                    print(f"Notice: could not delete pending PDF from GitHub: {ge}")
+
         return jsonify({
             "success": True,
             "filename": signed_filename,
             "download_url": f"/download/signed/{signed_filename}",
-            "preview_url": f"/api/preview/signed/{signed_filename}/1"
+            "preview_url": f"/api/preview/signed/{signed_filename}/1",
+            "github_sync": gh_status
         })
 
     except Exception as e:
@@ -663,7 +852,7 @@ def download_file(folder_type, filename):
 @app.route('/api/documents/<folder_type>/<path:filename>', methods=['DELETE'])
 @app.route('/api/delete/<folder_type>/<path:filename>', methods=['POST', 'DELETE'])
 def api_delete_document(folder_type, filename):
-    """Delete a document from pending, signed, or archive folder."""
+    """Delete a document from pending, signed, or archive folder, with optional GitHub deletion."""
     config = load_config()
     if folder_type == 'pending':
         target_dir = get_resolved_path(config.get('pending_dir', 'pending'))
@@ -677,14 +866,116 @@ def api_delete_document(folder_type, filename):
     clean_name = Path(filename).name
     file_path = target_dir / clean_name
 
-    if not file_path.exists():
-        return jsonify({"success": False, "error": f"File '{clean_name}' not found."}), 404
+    deleted_local = False
+    if file_path.exists():
+        try:
+            file_path.unlink()
+            deleted_local = True
+        except Exception as e:
+            return jsonify({"success": False, "error": f"Failed to delete local file: {str(e)}"}), 500
 
+    # Also check if user requested GitHub deletion
+    delete_github = request.args.get('delete_github', 'false').lower() == 'true'
+    gh_deleted = False
+    gh_error = None
+
+    if delete_github and folder_type == 'pending':
+        gh_cfg = get_github_config()
+        if gh_cfg['is_configured']:
+            try:
+                github_delete_file(f"pending/{clean_name}")
+                gh_deleted = True
+            except Exception as ge:
+                gh_error = str(ge)
+
+    if not deleted_local and not gh_deleted:
+        return jsonify({"success": False, "error": f"File '{clean_name}' not found locally."}), 404
+
+    return jsonify({
+        "success": True, 
+        "message": f"Deleted {clean_name}" + (" and removed from GitHub" if gh_deleted else ""),
+        "deleted_local": deleted_local,
+        "deleted_github": gh_deleted,
+        "github_error": gh_error
+    })
+
+# ----------------- GITHUB INTEGRATION ENDPOINTS -----------------
+
+@app.route('/api/github/status')
+def api_github_status():
+    """Get status of GitHub integration."""
+    gh = get_github_config()
+    return jsonify({
+        "is_configured": gh["is_configured"],
+        "repo": gh["repo"],
+        "branch": gh["branch"],
+        "auto_delete_pending": gh["auto_delete_github_pending"],
+        "auto_upload_signed": gh["auto_upload_github_signed"],
+        "has_token": bool(gh["token"])
+    })
+
+@app.route('/api/github/test', methods=['POST'])
+def api_github_test():
+    """Test GitHub connection with repository and token."""
+    data = request.get_json(silent=True) or {}
+    repo = data.get('repo')
+    token = data.get('token')
+    res = github_test_connection(repo, token)
+    return jsonify(res)
+
+@app.route('/api/github/pending')
+def api_github_pending():
+    """List all files in GitHub repo pending/ folder."""
+    gh = get_github_config()
+    if not gh['is_configured']:
+        return jsonify({"success": False, "error": "GitHub is not configured with repository & token.", "files": []})
     try:
-        file_path.unlink()
-        return jsonify({"success": True, "message": f"Deleted {clean_name}"})
+        files = github_list_pending_files()
+        return jsonify({"success": True, "files": files, "repo": gh['repo'], "branch": gh['branch']})
     except Exception as e:
-        return jsonify({"success": False, "error": f"Failed to delete file: {str(e)}"}), 500
+        return jsonify({"success": False, "error": str(e), "files": []}), 500
+
+@app.route('/api/github/delete/pending/<path:filename>', methods=['POST', 'DELETE'])
+def api_github_delete_pending(filename):
+    """Delete a specific file from GitHub pending/ folder."""
+    gh = get_github_config()
+    if not gh['is_configured']:
+        return jsonify({"success": False, "error": "GitHub is not configured."}), 400
+    try:
+        clean_name = Path(filename).name
+        github_delete_file(f"pending/{clean_name}")
+        return jsonify({"success": True, "message": f"Deleted {clean_name} from GitHub pending folder."})
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Failed to delete from GitHub: {str(e)}"}), 500
+
+@app.route('/api/github/clear-pending', methods=['POST'])
+def api_github_clear_pending():
+    """Delete all files from GitHub pending/ folder in batch."""
+    gh = get_github_config()
+    if not gh['is_configured']:
+        return jsonify({"success": False, "error": "GitHub is not configured."}), 400
+    try:
+        files = github_list_pending_files()
+        if not files:
+            return jsonify({"success": True, "deleted_count": 0, "message": "GitHub pending folder is already empty."})
+
+        deleted = 0
+        errors = []
+        for f in files:
+            try:
+                github_delete_file(f['path'], sha=f.get('sha'))
+                deleted += 1
+            except Exception as ge:
+                errors.append(f"{f['name']}: {str(ge)}")
+
+        return jsonify({
+            "success": True, 
+            "deleted_count": deleted, 
+            "errors": errors, 
+            "message": f"Successfully deleted {deleted} files from GitHub pending folder."
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/clear/<folder_type>', methods=['POST'])
 def api_clear_folder(folder_type):
