@@ -150,13 +150,24 @@
 
         <!-- Pending Documents -->
         <div>
-            <div class="flex items-center justify-between mb-4">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
                 <div class="flex items-center gap-3">
                     <h3 class="text-xl font-bold text-white flex items-center gap-2">
                         <i data-lucide="clock" class="w-5 h-5 text-amber-400"></i>
                         Pending Signatures
                     </h3>
                     <span id="pendingCountBadge" class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30">0 files</span>
+                </div>
+                <!-- Pending Actions -->
+                <div class="flex items-center gap-2">
+                    <button id="btnOpenGitHubPending" onclick="openGitHubManagerModal()" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 shadow-sm" title="Manage pending files stored on GitHub repository">
+                        <i data-lucide="github" class="w-3.5 h-3.5 text-sky-400"></i>
+                        <span>GitHub Pending (<span id="ghPendingCountBadge">0</span>)</span>
+                    </button>
+                    <button onclick="clearAllPendingDocs()" class="px-3 py-1.5 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 shadow-sm" title="Clear local pending folder">
+                        <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                        Clear Pending
+                    </button>
                 </div>
             </div>
 
@@ -416,6 +427,46 @@
                 </div>
             </div>
 
+            <!-- GitHub Integration Settings -->
+            <div class="pt-2 border-t border-slate-700 space-y-3">
+                <div class="flex items-center justify-between">
+                    <h4 class="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                        <i data-lucide="github" class="w-3.5 h-3.5 text-sky-400"></i> GitHub Repo & Cloud Sync
+                    </h4>
+                    <button type="button" onclick="testGitHubConnectionFromSettings()" class="text-[10px] text-sky-400 hover:text-sky-300 font-semibold underline">
+                        Test Connection
+                    </button>
+                </div>
+                <div>
+                    <label class="block text-[11px] font-medium text-slate-300 mb-1">GitHub Repository (<code class="text-sky-300">owner/repo</code>)</label>
+                    <input type="text" id="setting_github_repo" placeholder="e.g. your-username/it-handover-signer" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white placeholder-slate-500 focus:ring-2 focus:ring-sky-500 focus:outline-none">
+                </div>
+                <div>
+                    <label class="block text-[11px] font-medium text-slate-300 mb-1">GitHub Personal Access Token (PAT)</label>
+                    <input type="password" id="setting_github_token" placeholder="ghp_... (with repo / contents write permission)" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white placeholder-slate-500 focus:ring-2 focus:ring-sky-500 focus:outline-none">
+                    <p class="text-[10px] text-slate-400 mt-1">Allows the app to delete files directly from GitHub's Pending folder and push signed PDFs to GitHub.</p>
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-[11px] font-medium text-slate-300 mb-1">Git Branch</label>
+                        <input type="text" id="setting_github_branch" placeholder="main" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:ring-2 focus:ring-sky-500 focus:outline-none">
+                    </div>
+                    <div class="flex items-end">
+                        <div id="ghSettingsTestResult" class="text-[11px] font-medium truncate py-1.5"></div>
+                    </div>
+                </div>
+                <div class="space-y-1.5 pt-1">
+                    <label class="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" id="setting_gh_auto_delete" class="rounded bg-slate-900 border-slate-700 text-sky-500 focus:ring-sky-500">
+                        <span class="text-xs text-slate-200">Automatically delete pending PDF from GitHub when signed</span>
+                    </label>
+                    <label class="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" id="setting_gh_auto_upload" class="rounded bg-slate-900 border-slate-700 text-sky-500 focus:ring-sky-500">
+                        <span class="text-xs text-slate-200">Automatically upload signed PDF to GitHub <code class="text-emerald-400 font-mono text-[11px]">signed/</code> folder</span>
+                    </label>
+                </div>
+            </div>
+
             <!-- Public URL / Domain -->
             <div class="pt-2 border-t border-slate-700">
                 <label class="block text-xs font-medium text-slate-300 mb-1">Public Cloud URL / Tunnel Domain <span class="text-slate-500 font-normal">(Optional)</span></label>
@@ -443,6 +494,64 @@
                 </button>
             </div>
         </form>
+    </div>
+</div>
+
+<!-- Modal: GitHub Repository Pending Files Manager -->
+<div id="githubModal" class="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm hidden items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-2xl w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
+        <div class="flex justify-between items-center p-4 border-b border-slate-800 bg-slate-800/80">
+            <div class="flex items-center gap-2.5">
+                <div class="w-8 h-8 rounded-lg bg-sky-500/20 text-sky-400 flex items-center justify-center">
+                    <i data-lucide="github" class="w-4 h-4"></i>
+                </div>
+                <div>
+                    <h3 class="font-bold text-white text-base">GitHub Pending Files Manager</h3>
+                    <p class="text-xs text-slate-400">View and delete files sitting in your GitHub repository's pending folder.</p>
+                </div>
+            </div>
+            <button onclick="closeGitHubManagerModal()" class="text-slate-400 hover:text-white p-1">
+                <i data-lucide="x" class="w-5 h-5"></i>
+            </button>
+        </div>
+
+        <!-- GitHub Status Banner -->
+        <div class="p-4 bg-slate-950/60 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+            <div id="ghModalStatus" class="flex items-center gap-2 text-slate-300">
+                <span class="w-2.5 h-2.5 rounded-full bg-slate-500" id="ghStatusDot"></span>
+                <span id="ghStatusText">Checking GitHub connection...</span>
+            </div>
+            <div class="flex items-center gap-2">
+                <button onclick="refreshGitHubPendingFiles()" class="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs transition flex items-center gap-1 border border-slate-700">
+                    <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> Refresh
+                </button>
+                <button id="ghClearAllBtn" onclick="clearAllGitHubPendingFiles()" class="px-2.5 py-1.5 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 rounded-lg text-xs font-semibold transition flex items-center gap-1">
+                    <i data-lucide="trash-2" class="w-3.5 h-3.5"></i> Delete All from GitHub
+                </button>
+            </div>
+        </div>
+
+        <!-- File list -->
+        <div class="flex-1 overflow-auto p-4 space-y-2.5" id="ghFileListContainer">
+            <div class="py-8 text-center text-slate-500 text-xs">
+                <i data-lucide="loader-2" class="w-5 h-5 animate-spin mx-auto mb-2 text-sky-400"></i>
+                Loading GitHub pending files...
+            </div>
+        </div>
+
+        <!-- Quick Setup / Settings Prompt if Not Configured -->
+        <div id="ghSetupPrompt" class="p-4 bg-slate-800/80 border-t border-slate-700 text-xs space-y-2 hidden">
+            <div class="flex items-start gap-2">
+                <i data-lucide="info" class="w-4 h-4 text-sky-400 flex-shrink-0 mt-0.5"></i>
+                <div>
+                    <p class="font-semibold text-slate-200">Connect GitHub to enable one-click cloud file deletion</p>
+                    <p class="text-slate-400 text-[11px] mt-0.5">Add your repository (<code class="text-sky-300">owner/repo</code>) and a Personal Access Token in Settings to easily delete files from GitHub or auto-delete after signing.</p>
+                </div>
+            </div>
+            <button onclick="closeGitHubManagerModal(); openSettingsModal();" class="px-3 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-xs font-semibold transition">
+                Configure GitHub in Settings
+            </button>
+        </div>
     </div>
 </div>
 {% endblock %}
