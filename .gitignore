@@ -1,0 +1,27 @@
+# Handover PDF Documents (Prevent automatic loading/bundling on GitHub)
+pending/*.pdf
+pending/.archive/
+signed/*.pdf
+!pending/.gitkeep
+!signed/.gitkeep
+
+# Samples
+samples/
+
+# Python cache & virtual environments
+__pycache__/
+*.py[cod]
+*.class
+.venv/
+venv/
+ENV/
+env/
+
+# Environment variables & credentials
+.env
+.env.local
+
+# Executables & System
+cloudflared.exe
+.DS_Store
+Thumbs.db
