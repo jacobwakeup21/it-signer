@@ -737,11 +737,25 @@ async function openSettingsModal() {
         const ghBranchInput = document.getElementById('setting_github_branch');
         const ghAutoDelInput = document.getElementById('setting_gh_auto_delete');
         const ghAutoUpInput = document.getElementById('setting_gh_auto_upload');
-        const ghTestResult = document.getElementById('ghSettingsTestResult');
+        let repoVal = config.github_repo || '';
+        let tokenVal = config.github_token || '';
+        let branchVal = config.github_branch || 'main';
 
-        if (ghRepoInput) ghRepoInput.value = config.github_repo || '';
-        if (ghTokenInput) ghTokenInput.value = config.github_token || '';
-        if (ghBranchInput) ghBranchInput.value = config.github_branch || 'main';
+        if (!repoVal || !tokenVal) {
+            try {
+                const cached = localStorage.getItem('it_signer_github_sync');
+                if (cached) {
+                    const parsed = JSON.parse(cached);
+                    if (!repoVal && parsed.github_repo) repoVal = parsed.github_repo;
+                    if (!tokenVal && parsed.github_token) tokenVal = parsed.github_token;
+                    if (parsed.github_branch) branchVal = parsed.github_branch;
+                }
+            } catch (e) {}
+        }
+
+        if (ghRepoInput) ghRepoInput.value = repoVal;
+        if (ghTokenInput) ghTokenInput.value = tokenVal;
+        if (ghBranchInput) ghBranchInput.value = branchVal;
         if (ghAutoDelInput) ghAutoDelInput.checked = config.auto_delete_github_pending !== false;
         if (ghAutoUpInput) ghAutoUpInput.checked = config.auto_upload_github_signed !== false;
         if (ghTestResult) ghTestResult.textContent = '';
@@ -820,6 +834,23 @@ async function saveSettings(e) {
         });
         const data = await res.json();
         if (data.success) {
+            // Save GitHub config to localStorage as client-side backup against ephemeral cloud resets (Render)
+            try {
+                if (ghRepo && ghToken) {
+                    localStorage.setItem('it_signer_github_sync', JSON.stringify({
+                        github_repo: ghRepo,
+                        github_token: ghToken,
+                        github_branch: ghBranch || 'main',
+                        auto_delete_github_pending: ghAutoDelete,
+                        auto_upload_github_signed: ghAutoUpload
+                    }));
+                } else {
+                    localStorage.removeItem('it_signer_github_sync');
+                }
+            } catch (storageErr) {
+                console.warn('Could not cache GitHub settings in localStorage:', storageErr);
+            }
+
             closeSettingsModal();
             alert('Settings saved successfully!');
             if (pubUrl) {
@@ -838,8 +869,34 @@ async function saveSettings(e) {
 
 async function checkGitHubStatus() {
     try {
-        const res = await fetch('/api/github/status');
-        const data = await res.json();
+        let res = await fetch('/api/github/status');
+        let data = await res.json();
+
+        // If backend lost config (e.g. Render restarted / spun down), auto-restore from browser localStorage
+        if (!data.is_configured) {
+            try {
+                const cached = localStorage.getItem('it_signer_github_sync');
+                if (cached) {
+                    const parsed = JSON.parse(cached);
+                    if (parsed.github_repo && parsed.github_token) {
+                        console.log('Restoring GitHub credentials from browser storage...');
+                        const restoreRes = await fetch('/api/config', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(parsed)
+                        });
+                        const restoreData = await restoreRes.json();
+                        if (restoreData.success) {
+                            res = await fetch('/api/github/status');
+                            data = await res.json();
+                        }
+                    }
+                }
+            } catch (syncErr) {
+                console.warn('Could not restore GitHub config from localStorage:', syncErr);
+            }
+        }
+
         gitHubConfig = data;
 
         const badge = document.getElementById('ghPendingCountBadge');
@@ -1000,7 +1057,9 @@ async function deleteGitHubFile(filename) {
             refreshDocuments();
             checkGitHubStatus();
         } else {
-            alert(`Failed to delete from GitHub: ${data.error}`);
+            const rawErr = data.error || 'Unknown error';
+            const displayErr = rawErr.startsWith('Failed to delete') ? rawErr : `Failed to delete from GitHub: ${rawErr}`;
+            alert(displayErr);
         }
     } catch (err) {
         alert(`Error: ${err.message}`);
@@ -1034,12 +1093,12 @@ async function testGitHubConnectionFromSettings() {
     const resultEl = document.getElementById('ghSettingsTestResult');
 
     if (!repo) {
-        resultEl.className = 'text-[11px] font-medium text-amber-400 truncate py-1.5';
+        resultEl.className = 'text-[11px] font-medium text-amber-400 py-1.5 leading-tight';
         resultEl.textContent = 'Please enter a repository (owner/repo).';
         return;
     }
 
-    resultEl.className = 'text-[11px] font-medium text-sky-400 truncate py-1.5';
+    resultEl.className = 'text-[11px] font-medium text-sky-400 py-1.5 leading-tight';
     resultEl.innerHTML = '<i data-lucide="loader-2" class="w-3 h-3 animate-spin inline mr-1"></i> Testing...';
     if (window.lucide) lucide.createIcons();
 
@@ -1052,14 +1111,19 @@ async function testGitHubConnectionFromSettings() {
         const data = await res.json();
 
         if (data.success) {
-            resultEl.className = 'text-[11px] font-medium text-emerald-400 truncate py-1.5';
-            resultEl.textContent = `✓ Connected to ${data.full_name} (${data.default_branch})`;
+            if (data.warning) {
+                resultEl.className = 'text-[11px] font-medium text-amber-400 py-1.5 leading-relaxed';
+                resultEl.innerHTML = `⚠️ <strong>Connected</strong>, but: ${data.warning}`;
+            } else {
+                resultEl.className = 'text-[11px] font-medium text-emerald-400 py-1.5 leading-relaxed';
+                resultEl.textContent = `✓ Connected to ${data.full_name} (${data.default_branch}) with write access`;
+            }
         } else {
-            resultEl.className = 'text-[11px] font-medium text-rose-400 truncate py-1.5';
+            resultEl.className = 'text-[11px] font-medium text-rose-400 py-1.5 leading-relaxed';
             resultEl.textContent = `✕ ${data.error}`;
         }
     } catch (err) {
-        resultEl.className = 'text-[11px] font-medium text-rose-400 truncate py-1.5';
+        resultEl.className = 'text-[11px] font-medium text-rose-400 py-1.5 leading-relaxed';
         resultEl.textContent = `✕ Connection failed: ${err.message}`;
     }
 }
