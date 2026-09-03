@@ -249,14 +249,15 @@ def quote_github_path(path_str):
     parts = clean.split('/')
     return '/'.join(urllib.parse.quote(p, safe='') for p in parts)
 
-def github_list_pending_files():
-    """List all files in GitHub repo's pending directory."""
+def github_list_folder_files(folder='pending'):
+    """List all files in GitHub repo's specified directory (pending or signed)."""
     gh = get_github_config()
     if not gh['is_configured']:
         return []
     try:
+        clean_folder = folder.strip().strip('/')
         query = urllib.parse.urlencode({'ref': gh['branch']})
-        endpoint = f"repos/{gh['repo']}/contents/pending?{query}"
+        endpoint = f"repos/{gh['repo']}/contents/{clean_folder}?{query}"
         items = github_api_request("GET", endpoint)
         if isinstance(items, list):
             files = []
@@ -276,8 +277,16 @@ def github_list_pending_files():
     except Exception as e:
         if "404" in str(e):
             return []
-        print(f"Error listing GitHub pending files: {e}")
+        print(f"Error listing GitHub {folder} files: {e}")
         return []
+
+def github_list_pending_files():
+    """List all files in GitHub repo's pending directory."""
+    return github_list_folder_files('pending')
+
+def github_list_signed_files():
+    """List all files in GitHub repo's signed directory."""
+    return github_list_folder_files('signed')
 
 def github_delete_file(path_in_repo, sha=None, commit_msg=None):
     """Delete a file from GitHub repository with safe URL encoding."""
@@ -910,11 +919,11 @@ def api_delete_document(folder_type, filename):
     gh_deleted = False
     gh_error = None
 
-    if delete_github and folder_type == 'pending':
+    if delete_github and folder_type in ('pending', 'signed'):
         gh_cfg = get_github_config()
         if gh_cfg['is_configured']:
             try:
-                github_delete_file(f"pending/{clean_name}")
+                github_delete_file(f"{folder_type}/{clean_name}")
                 gh_deleted = True
             except Exception as ge:
                 gh_error = str(ge)
@@ -1004,6 +1013,60 @@ def api_github_clear_pending():
             "deleted_count": deleted, 
             "errors": errors, 
             "message": f"Successfully deleted {deleted} files from GitHub pending folder."
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/github/signed')
+def api_github_signed():
+    """List all files in GitHub repo signed/ folder."""
+    gh = get_github_config()
+    if not gh['is_configured']:
+        return jsonify({"success": False, "error": "GitHub is not configured with repository & token.", "files": []})
+    try:
+        files = github_list_signed_files()
+        return jsonify({"success": True, "files": files, "repo": gh['repo'], "branch": gh['branch']})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e), "files": []}), 500
+
+@app.route('/api/github/delete/signed/<path:filename>', methods=['POST', 'DELETE'])
+def api_github_delete_signed(filename):
+    """Delete a specific file from GitHub signed/ folder."""
+    gh = get_github_config()
+    if not gh['is_configured']:
+        return jsonify({"success": False, "error": "GitHub is not configured."}), 400
+    try:
+        clean_name = Path(filename).name
+        github_delete_file(f"signed/{clean_name}")
+        return jsonify({"success": True, "message": f"Deleted {clean_name} from GitHub signed folder."})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/github/clear-signed', methods=['POST'])
+def api_github_clear_signed():
+    """Delete all files from GitHub signed/ folder in batch."""
+    gh = get_github_config()
+    if not gh['is_configured']:
+        return jsonify({"success": False, "error": "GitHub is not configured."}), 400
+    try:
+        files = github_list_signed_files()
+        if not files:
+            return jsonify({"success": True, "deleted_count": 0, "message": "GitHub signed folder is already empty."})
+
+        deleted = 0
+        errors = []
+        for f in files:
+            try:
+                github_delete_file(f['path'], sha=f.get('sha'))
+                deleted += 1
+            except Exception as ge:
+                errors.append(f"{f['name']}: {str(ge)}")
+
+        return jsonify({
+            "success": True, 
+            "deleted_count": deleted, 
+            "errors": errors, 
+            "message": f"Successfully deleted {deleted} files from GitHub signed folder."
         })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
