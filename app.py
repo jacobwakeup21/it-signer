@@ -196,6 +196,12 @@ def github_api_request(method, endpoint, data=None, token=None):
             msg = err_json.get('message', err_body)
         except Exception:
             msg = err_body
+        if e.code == 403 and "Resource not accessible by personal access token" in msg:
+            msg = (
+                f"{msg}. Your Personal Access Token lacks WRITE permissions for this repository. "
+                "For Fine-grained PAT: edit token and set Repository Permissions -> 'Contents' to 'Read and write'. "
+                "Or switch to a Classic PAT with 'repo' scope."
+            )
         raise RuntimeError(f"GitHub API error ({e.code}): {msg}")
     except Exception as e:
         raise RuntimeError(f"Network error connecting to GitHub: {str(e)}")
@@ -215,11 +221,23 @@ def github_test_connection(repo=None, token=None):
 
     try:
         data = github_api_request("GET", f"repos/{clean_repo}", token=target_token)
+        perms = data.get("permissions") or {}
+        can_push = perms.get("push", False) if perms else None
+        warning = None
+        if perms and not can_push:
+            warning = (
+                "Token has READ access, but lacks WRITE permission (cannot delete or upload files). "
+                "For Fine-grained PAT: change 'Contents' permission from Read-only to 'Read and write'. "
+                "For Classic PAT: ensure 'repo' scope is checked."
+            )
         return {
             "success": True,
             "full_name": data.get("full_name"),
             "default_branch": data.get("default_branch", "main"),
             "private": data.get("private", False),
+            "permissions": perms,
+            "can_push": can_push,
+            "warning": warning,
             "message": f"Successfully connected to GitHub repository '{clean_repo}'"
         }
     except Exception as e:
@@ -959,7 +977,7 @@ def api_github_delete_pending(filename):
         github_delete_file(f"pending/{clean_name}")
         return jsonify({"success": True, "message": f"Deleted {clean_name} from GitHub pending folder."})
     except Exception as e:
-        return jsonify({"success": False, "error": f"Failed to delete from GitHub: {str(e)}"}), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/github/clear-pending', methods=['POST'])
 def api_github_clear_pending():
