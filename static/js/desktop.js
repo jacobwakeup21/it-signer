@@ -23,6 +23,13 @@ let calibCoords = {
 // GitHub Integration State
 let gitHubConfig = { is_configured: false, repo: '', branch: 'main' };
 let gitHubPendingFiles = [];
+let gitHubSignedFiles = [];
+let currentGitHubTab = 'pending'; // 'pending' or 'signed'
+
+// Local PC Auto-Save State
+let localFolderHandle = null;
+let autoSaveActive = false;
+let autoSavedFiles = new Set(JSON.parse(localStorage.getItem('it_autosaved_files') || '[]'));
 
 document.addEventListener('DOMContentLoaded', () => {
     initNetworkControls();
@@ -30,6 +37,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initCalibratorInteractions();
     refreshDocuments();
     checkGitHubStatus();
+    initLocalAutoSave();
     
     // Auto-refresh document list every 5 seconds & GitHub status every 15s
     setInterval(refreshDocuments, 5000);
@@ -107,6 +115,7 @@ async function refreshDocuments() {
         document.getElementById('signedCountBadge').textContent = `${signedFiles.length} file${signedFiles.length === 1 ? '' : 's'}`;
 
         sortAndRenderDocuments();
+        triggerAutoSaveForNewDocs(signedFiles);
     } catch (err) {
         console.error('Failed to load documents:', err);
     }
@@ -306,13 +315,15 @@ async function deleteDocument(folder, filename) {
     
     if (folder === 'pending' && gitHubConfig && gitHubConfig.is_configured) {
         confirmMsg = `Remove "${filename}" from pending documents?`;
+    } else if (folder === 'signed' && gitHubConfig && gitHubConfig.is_configured) {
+        confirmMsg = `Remove "${filename}" from signed documents?`;
     }
 
     if (!confirm(confirmMsg)) {
         return;
     }
 
-    if (folder === 'pending' && gitHubConfig && gitHubConfig.is_configured) {
+    if ((folder === 'pending' || folder === 'signed') && gitHubConfig && gitHubConfig.is_configured) {
         deleteFromGh = confirm(`Do you also want to delete "${filename}" from the GitHub repository?`);
     }
 
@@ -364,11 +375,20 @@ async function clearAllSignedDocs() {
         return;
     }
 
+    let clearGh = false;
+    if (gitHubConfig && gitHubConfig.is_configured) {
+        clearGh = confirm('Do you also want to delete all signed files from the GitHub repository?');
+    }
+
     try {
+        if (clearGh) {
+            await fetch('/api/github/clear-signed', { method: 'POST' });
+        }
         const res = await fetch('/api/clear/signed', { method: 'POST' });
         const data = await res.json();
         if (data.success) {
             refreshDocuments();
+            if (gitHubConfig && gitHubConfig.is_configured) checkGitHubStatus();
         } else {
             alert(`Error: ${data.error}`);
         }
@@ -737,6 +757,7 @@ async function openSettingsModal() {
         const ghBranchInput = document.getElementById('setting_github_branch');
         const ghAutoDelInput = document.getElementById('setting_gh_auto_delete');
         const ghAutoUpInput = document.getElementById('setting_gh_auto_upload');
+        const ghTestResult = document.getElementById('ghSettingsTestResult');
         let repoVal = config.github_repo || '';
         let tokenVal = config.github_token || '';
         let branchVal = config.github_branch || 'main';
@@ -899,30 +920,46 @@ async function checkGitHubStatus() {
 
         gitHubConfig = data;
 
-        const badge = document.getElementById('ghPendingCountBadge');
         if (data.is_configured) {
-            const pRes = await fetch('/api/github/pending');
-            const pData = await pRes.json();
-            if (pData.success && Array.isArray(pData.files)) {
-                gitHubPendingFiles = pData.files;
-                if (badge) badge.textContent = pData.files.length;
-            } else {
-                if (badge) badge.textContent = '0';
+            try {
+                const [pRes, sRes] = await Promise.all([
+                    fetch('/api/github/pending'),
+                    fetch('/api/github/signed')
+                ]);
+                const pData = await pRes.json();
+                const sData = await sRes.json();
+                if (pData.success && Array.isArray(pData.files)) gitHubPendingFiles = pData.files;
+                if (sData.success && Array.isArray(sData.files)) gitHubSignedFiles = sData.files;
+            } catch (e) {
+                console.warn('Error updating GitHub lists:', e);
             }
+
+            const pBadge = document.getElementById('ghPendingCountBadge');
+            if (pBadge) pBadge.textContent = gitHubPendingFiles.length;
+            const sBadge = document.getElementById('ghSignedCountBadge');
+            if (sBadge) sBadge.textContent = gitHubSignedFiles.length;
+
+            const tpBadge = document.getElementById('ghTabPendingBadge');
+            if (tpBadge) tpBadge.textContent = gitHubPendingFiles.length;
+            const tsBadge = document.getElementById('ghTabSignedBadge');
+            if (tsBadge) tsBadge.textContent = gitHubSignedFiles.length;
         } else {
-            if (badge) badge.textContent = 'Not setup';
+            const pBadge = document.getElementById('ghPendingCountBadge');
+            if (pBadge) pBadge.textContent = 'Not setup';
+            const sBadge = document.getElementById('ghSignedCountBadge');
+            if (sBadge) sBadge.textContent = 'Not setup';
         }
     } catch (err) {
         console.error('Error checking GitHub status:', err);
     }
 }
 
-function openGitHubManagerModal() {
+function openGitHubManagerModal(folder = 'pending') {
     const modal = document.getElementById('githubModal');
     if (!modal) return;
     modal.classList.remove('hidden');
     modal.classList.add('flex');
-    refreshGitHubPendingFiles();
+    switchGitHubTab(folder || 'pending');
 }
 
 function closeGitHubManagerModal() {
@@ -932,19 +969,48 @@ function closeGitHubManagerModal() {
     modal.classList.remove('flex');
 }
 
-async function refreshGitHubPendingFiles() {
+function switchGitHubTab(folder) {
+    currentGitHubTab = folder || 'pending';
+    const pendingBtn = document.getElementById('ghTabPendingBtn');
+    const signedBtn = document.getElementById('ghTabSignedBtn');
+    const clearBtnLabel = document.getElementById('ghClearBtnLabel');
+
+    if (currentGitHubTab === 'signed') {
+        if (signedBtn) {
+            signedBtn.className = 'px-4 py-2 border-b-2 border-emerald-500 text-emerald-400 font-semibold text-xs flex items-center gap-2 transition';
+        }
+        if (pendingBtn) {
+            pendingBtn.className = 'px-4 py-2 border-b-2 border-transparent text-slate-400 hover:text-slate-200 font-semibold text-xs flex items-center gap-2 transition';
+        }
+        if (clearBtnLabel) clearBtnLabel.textContent = 'Delete All from GitHub Signed';
+    } else {
+        if (pendingBtn) {
+            pendingBtn.className = 'px-4 py-2 border-b-2 border-sky-500 text-sky-400 font-semibold text-xs flex items-center gap-2 transition';
+        }
+        if (signedBtn) {
+            signedBtn.className = 'px-4 py-2 border-b-2 border-transparent text-slate-400 hover:text-slate-200 font-semibold text-xs flex items-center gap-2 transition';
+        }
+        if (clearBtnLabel) clearBtnLabel.textContent = 'Delete All from GitHub Pending';
+    }
+
+    refreshCurrentGitHubFolder();
+}
+
+async function refreshCurrentGitHubFolder() {
     const container = document.getElementById('ghFileListContainer');
     const statusDot = document.getElementById('ghStatusDot');
     const statusText = document.getElementById('ghStatusText');
     const setupPrompt = document.getElementById('ghSetupPrompt');
     const clearBtn = document.getElementById('ghClearAllBtn');
+    const folder = currentGitHubTab || 'pending';
+    const folderLabel = folder === 'signed' ? 'Signed' : 'Pending';
 
     if (!container) return;
 
     container.innerHTML = `
         <div class="py-8 text-center text-slate-500 text-xs">
             <i data-lucide="loader-2" class="w-5 h-5 animate-spin mx-auto mb-2 text-sky-400"></i>
-            Loading GitHub pending files...
+            Loading GitHub ${folderLabel.toLowerCase()} files...
         </div>
     `;
     if (window.lucide) lucide.createIcons();
@@ -967,7 +1033,7 @@ async function refreshGitHubPendingFiles() {
                 <div class="bg-slate-950/40 border border-slate-800 rounded-xl p-6 text-center space-y-2">
                     <i data-lucide="github" class="w-8 h-8 mx-auto text-slate-600"></i>
                     <h4 class="text-xs font-bold text-slate-300">GitHub Repository Not Connected</h4>
-                    <p class="text-[11px] text-slate-500 max-w-sm mx-auto">Configure your repository and Personal Access Token in Settings to view and delete files sitting in GitHub's pending folder.</p>
+                    <p class="text-[11px] text-slate-500 max-w-sm mx-auto">Configure your repository and Personal Access Token in Settings to view and delete files sitting in GitHub.</p>
                 </div>
             `;
             if (window.lucide) lucide.createIcons();
@@ -982,34 +1048,45 @@ async function refreshGitHubPendingFiles() {
         if (statusDot) statusDot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-400';
         if (statusText) statusText.innerHTML = `Connected to <strong class="text-white font-mono">${statusData.repo}</strong> (<span class="text-sky-300 font-mono">${statusData.branch}</span>)`;
 
-        const res = await fetch('/api/github/pending');
+        const res = await fetch(`/api/github/${folder}`);
         const data = await res.json();
 
         if (!data.success) {
-            throw new Error(data.error || 'Failed to load GitHub pending files');
+            throw new Error(data.error || `Failed to load GitHub ${folder} files`);
         }
 
-        gitHubPendingFiles = data.files || [];
-        const badge = document.getElementById('ghPendingCountBadge');
-        if (badge) badge.textContent = gitHubPendingFiles.length;
+        const files = data.files || [];
+        if (folder === 'signed') {
+            gitHubSignedFiles = files;
+            const b = document.getElementById('ghSignedCountBadge');
+            if (b) b.textContent = files.length;
+            const tb = document.getElementById('ghTabSignedBadge');
+            if (tb) tb.textContent = files.length;
+        } else {
+            gitHubPendingFiles = files;
+            const b = document.getElementById('ghPendingCountBadge');
+            if (b) b.textContent = files.length;
+            const tb = document.getElementById('ghTabPendingBadge');
+            if (tb) tb.textContent = files.length;
+        }
 
-        if (gitHubPendingFiles.length === 0) {
+        if (files.length === 0) {
             container.innerHTML = `
                 <div class="bg-slate-950/40 border border-slate-800 rounded-xl p-8 text-center space-y-2">
                     <i data-lucide="check-circle-2" class="w-8 h-8 mx-auto text-emerald-400"></i>
-                    <h4 class="text-xs font-bold text-slate-200">GitHub Pending Folder is Clean!</h4>
-                    <p class="text-[11px] text-slate-400">No pending files found on GitHub repository.</p>
+                    <h4 class="text-xs font-bold text-slate-200">GitHub ${folderLabel} Folder is Clean!</h4>
+                    <p class="text-[11px] text-slate-400">No ${folderLabel.toLowerCase()} files found on GitHub repository.</p>
                 </div>
             `;
             if (window.lucide) lucide.createIcons();
             return;
         }
 
-        container.innerHTML = gitHubPendingFiles.map(file => {
+        container.innerHTML = files.map(file => {
             return `
             <div class="bg-slate-950/70 border border-slate-800 hover:border-slate-700 rounded-xl p-3 flex items-center justify-between gap-3 transition">
                 <div class="flex items-center gap-3 min-w-0">
-                    <div class="w-9 h-9 rounded-lg bg-sky-500/10 border border-sky-500/20 text-sky-400 flex items-center justify-center flex-shrink-0">
+                    <div class="w-9 h-9 rounded-lg ${folder === 'signed' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-sky-500/10 border-sky-500/20 text-sky-400'} border flex items-center justify-center flex-shrink-0">
                         <i data-lucide="file-text" class="w-4 h-4"></i>
                     </div>
                     <div class="min-w-0">
@@ -1023,7 +1100,7 @@ async function refreshGitHubPendingFiles() {
                         </div>
                     </div>
                 </div>
-                <button data-filename="${encodeURIComponent(file.name)}" onclick="deleteGitHubFile(decodeURIComponent(this.getAttribute('data-filename')))" class="px-3 py-1.5 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 rounded-lg text-xs font-semibold transition flex items-center gap-1 flex-shrink-0" title="Delete from GitHub repository">
+                <button data-folder="${folder}" data-filename="${encodeURIComponent(file.name)}" onclick="deleteGitHubFile(this.getAttribute('data-folder'), decodeURIComponent(this.getAttribute('data-filename')))" class="px-3 py-1.5 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 rounded-lg text-xs font-semibold transition flex items-center gap-1 flex-shrink-0" title="Delete from GitHub repository">
                     <i data-lucide="trash-2" class="w-3.5 h-3.5"></i> Delete
                 </button>
             </div>
@@ -1042,18 +1119,19 @@ async function refreshGitHubPendingFiles() {
     }
 }
 
-async function deleteGitHubFile(filename) {
-    if (!confirm(`Are you sure you want to permanently delete "${filename}" from the GitHub repository?`)) {
+async function deleteGitHubFile(folder, filename) {
+    const fType = folder || currentGitHubTab || 'pending';
+    if (!confirm(`Are you sure you want to permanently delete "${filename}" from GitHub's ${fType} folder?`)) {
         return;
     }
 
     try {
-        const res = await fetch(`/api/github/delete/pending/${encodeURIComponent(filename)}`, {
+        const res = await fetch(`/api/github/delete/${fType}/${encodeURIComponent(filename)}`, {
             method: 'POST'
         });
         const data = await res.json();
         if (data.success) {
-            refreshGitHubPendingFiles();
+            refreshCurrentGitHubFolder();
             refreshDocuments();
             checkGitHubStatus();
         } else {
@@ -1066,25 +1144,233 @@ async function deleteGitHubFile(filename) {
     }
 }
 
-async function clearAllGitHubPendingFiles() {
-    if (!confirm('Are you sure you want to permanently delete ALL files from the GitHub pending folder?')) {
+async function clearAllCurrentGitHubFolder() {
+    const fType = currentGitHubTab || 'pending';
+    if (!confirm(`Are you sure you want to permanently delete ALL files from the GitHub ${fType} folder?`)) {
         return;
     }
 
     try {
-        const res = await fetch('/api/github/clear-pending', { method: 'POST' });
+        const res = await fetch(`/api/github/clear-${fType}`, { method: 'POST' });
         const data = await res.json();
         if (data.success) {
             alert(data.message);
-            refreshGitHubPendingFiles();
+            refreshCurrentGitHubFolder();
             refreshDocuments();
             checkGitHubStatus();
         } else {
             alert(`Error: ${data.error}`);
         }
     } catch (err) {
-        alert(`Failed to clear GitHub pending: ${err.message}`);
+        alert(`Failed to clear GitHub ${fType}: ${err.message}`);
     }
+}
+
+// ----------------- LOCAL PC AUTO-SAVE (DIRECT FILE SYSTEM ACCESS) -----------------
+
+const IDB_NAME = 'ITSignerStore';
+const IDB_STORE = 'handles';
+
+function getIDB() {
+    return new Promise((resolve, reject) => {
+        const req = indexedDB.open(IDB_NAME, 1);
+        req.onupgradeneeded = () => req.result.createObjectStore(IDB_STORE);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+    });
+}
+
+async function idbGet(key) {
+    try {
+        const db = await getIDB();
+        return new Promise((resolve) => {
+            const tx = db.transaction(IDB_STORE, 'readonly');
+            const req = tx.objectStore(IDB_STORE).get(key);
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => resolve(null);
+        });
+    } catch (e) {
+        return null;
+    }
+}
+
+async function idbSet(key, val) {
+    try {
+        const db = await getIDB();
+        return new Promise((resolve) => {
+            const tx = db.transaction(IDB_STORE, 'readwrite');
+            tx.objectStore(IDB_STORE).put(val, key);
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+        });
+    } catch (e) {}
+}
+
+async function idbDel(key) {
+    try {
+        const db = await getIDB();
+        return new Promise((resolve) => {
+            const tx = db.transaction(IDB_STORE, 'readwrite');
+            tx.objectStore(IDB_STORE).delete(key);
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => resolve();
+        });
+    } catch (e) {}
+}
+
+async function initLocalAutoSave() {
+    try {
+        const savedHandle = await idbGet('signed_folder_handle');
+        const enabled = localStorage.getItem('it_autosave_enabled') === 'true';
+        if (savedHandle && enabled) {
+            localFolderHandle = savedHandle;
+            const perm = await savedHandle.queryPermission({ mode: 'readwrite' });
+            if (perm === 'granted') {
+                autoSaveActive = true;
+                updateAutoSaveUI(savedHandle.name, true);
+            } else {
+                updateAutoSaveUI(savedHandle.name, false);
+            }
+        }
+    } catch (e) {
+        console.warn('Auto-save init check:', e);
+    }
+}
+
+function updateAutoSaveUI(folderName, isGranted = true) {
+    const label = document.getElementById('localAutoSaveLabel');
+    const icon = document.getElementById('localAutoSaveIcon');
+    const btn = document.getElementById('btnLocalAutoSave');
+    const currBox = document.getElementById('localAutoSaveCurrentFolderBox');
+    const currName = document.getElementById('localAutoSaveFolderName');
+    const disableBtn = document.getElementById('btnDisableAutoSave');
+    const pickBtnText = document.getElementById('btnPickFolderText');
+
+    if (folderName && isGranted) {
+        if (label) label.textContent = `Auto-Save: ${folderName}`;
+        if (btn) {
+            btn.className = 'px-3 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 shadow-sm';
+        }
+        if (icon) icon.className = 'w-3.5 h-3.5 text-emerald-400';
+        if (currBox) currBox.classList.remove('hidden');
+        if (currName) currName.textContent = folderName;
+        if (disableBtn) disableBtn.classList.remove('hidden');
+        if (pickBtnText) pickBtnText.textContent = 'Change Target Folder';
+    } else if (folderName && !isGranted) {
+        if (label) label.textContent = `Auto-Save: ${folderName} (Click to authorize)`;
+        if (btn) {
+            btn.className = 'px-3 py-1.5 bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/40 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 shadow-sm';
+        }
+        if (icon) icon.className = 'w-3.5 h-3.5 text-amber-400';
+        if (currBox) currBox.classList.remove('hidden');
+        if (currName) currName.textContent = `${folderName} (needs permission)`;
+        if (disableBtn) disableBtn.classList.remove('hidden');
+        if (pickBtnText) pickBtnText.textContent = 'Re-authorize / Change Folder';
+    } else {
+        if (label) label.textContent = 'Auto-Save to PC Folder';
+        if (btn) {
+            btn.className = 'px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 shadow-sm';
+        }
+        if (icon) icon.className = 'w-3.5 h-3.5 text-sky-400';
+        if (currBox) currBox.classList.add('hidden');
+        if (disableBtn) disableBtn.classList.add('hidden');
+        if (pickBtnText) pickBtnText.textContent = 'Choose Folder on Computer';
+    }
+}
+
+function setupLocalAutoSave() {
+    const modal = document.getElementById('localAutoSaveModal');
+    if (!modal) return;
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+}
+
+function closeLocalAutoSaveModal() {
+    const modal = document.getElementById('localAutoSaveModal');
+    if (!modal) return;
+    modal.classList.add('hidden');
+    modal.classList.remove('flex');
+}
+
+async function pickLocalDirectory() {
+    if (!window.showDirectoryPicker) {
+        alert('Your web browser does not support Direct Folder Access. Please open this page in Microsoft Edge or Google Chrome to enable native folder auto-saving.');
+        return;
+    }
+
+    try {
+        const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+        if (handle) {
+            localFolderHandle = handle;
+            autoSaveActive = true;
+            await idbSet('signed_folder_handle', handle);
+            localStorage.setItem('it_autosave_enabled', 'true');
+            updateAutoSaveUI(handle.name, true);
+            closeLocalAutoSaveModal();
+            showToast(`✓ Auto-save activated for folder: ${handle.name}`);
+
+            triggerAutoSaveForNewDocs(signedFiles);
+        }
+    } catch (err) {
+        if (err.name !== 'AbortError') {
+            alert(`Could not access folder: ${err.message}`);
+        }
+    }
+}
+
+async function disableLocalAutoSave() {
+    localFolderHandle = null;
+    autoSaveActive = false;
+    localStorage.removeItem('it_autosave_enabled');
+    await idbDel('signed_folder_handle');
+    updateAutoSaveUI(null);
+    closeLocalAutoSaveModal();
+    showToast('Auto-save to PC folder turned off.');
+}
+
+async function triggerAutoSaveForNewDocs(signedList) {
+    if (!autoSaveActive || !localFolderHandle || !Array.isArray(signedList) || signedList.length === 0) return;
+
+    for (const doc of signedList) {
+        if (!autoSavedFiles.has(doc.name)) {
+            try {
+                const res = await fetch(`/download/signed/${encodeURIComponent(doc.name)}`);
+                if (!res.ok) continue;
+                const blob = await res.blob();
+
+                const fileHandle = await localFolderHandle.getFileHandle(doc.name, { create: true });
+                const writable = await fileHandle.createWritable();
+                await writable.write(blob);
+                await writable.close();
+
+                autoSavedFiles.add(doc.name);
+                localStorage.setItem('it_autosaved_files', JSON.stringify(Array.from(autoSavedFiles)));
+                showToast(`💾 Auto-saved "${doc.name}" to your PC folder!`);
+            } catch (err) {
+                console.error('Error auto-saving document to PC:', doc.name, err);
+            }
+        }
+    }
+}
+
+function showToast(message) {
+    let toast = document.getElementById('itSignerToast');
+    if (!toast) {
+        toast = document.createElement('div');
+        toast.id = 'itSignerToast';
+        toast.className = 'fixed bottom-5 right-5 z-50 bg-slate-900/95 border border-emerald-500/40 text-emerald-300 text-xs font-semibold px-4 py-3 rounded-xl shadow-2xl transition-all duration-300 transform translate-y-12 opacity-0 flex items-center gap-2 backdrop-blur-sm';
+        document.body.appendChild(toast);
+    }
+    toast.innerHTML = `<i data-lucide="check-circle" class="w-4 h-4 text-emerald-400 flex-shrink-0"></i> <span>${message}</span>`;
+    if (window.lucide) lucide.createIcons();
+
+    toast.classList.remove('translate-y-12', 'opacity-0');
+    toast.classList.add('translate-y-0', 'opacity-100');
+
+    setTimeout(() => {
+        toast.classList.remove('translate-y-0', 'opacity-100');
+        toast.classList.add('translate-y-12', 'opacity-0');
+    }, 4000);
 }
 
 async function testGitHubConnectionFromSettings() {
