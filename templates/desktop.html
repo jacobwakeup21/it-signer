@@ -192,10 +192,18 @@
                     <span id="signedCountBadge" class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">0 files</span>
                 </div>
                 <!-- Signed Batch Actions -->
-                <div class="flex items-center gap-2">
+                <div class="flex flex-wrap items-center gap-2">
+                    <button id="btnOpenGitHubSigned" onclick="openGitHubManagerModal('signed')" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 shadow-sm" title="Manage signed files stored on GitHub repository">
+                        <i data-lucide="github" class="w-3.5 h-3.5 text-emerald-400"></i>
+                        <span>GitHub Signed (<span id="ghSignedCountBadge">0</span>)</span>
+                    </button>
+                    <button id="btnLocalAutoSave" onclick="setupLocalAutoSave()" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 shadow-sm" title="Automatically save newly signed PDFs into a folder on your computer">
+                        <i data-lucide="folder-down" id="localAutoSaveIcon" class="w-3.5 h-3.5 text-sky-400"></i>
+                        <span id="localAutoSaveLabel">Auto-Save to PC Folder</span>
+                    </button>
                     <a href="/api/download-all/signed" class="px-3 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 shadow-sm">
                         <i data-lucide="archive" class="w-3.5 h-3.5"></i>
-                        Export All to ZIP (OneDrive)
+                        Export All to ZIP
                     </a>
                     <button onclick="clearAllSignedDocs()" class="px-3 py-1.5 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 shadow-sm">
                         <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
@@ -499,7 +507,7 @@
     </div>
 </div>
 
-<!-- Modal: GitHub Repository Pending Files Manager -->
+<!-- Modal: GitHub Repository Files Manager (Pending & Signed) -->
 <div id="githubModal" class="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm hidden items-center justify-center p-4">
     <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-2xl w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
         <div class="flex justify-between items-center p-4 border-b border-slate-800 bg-slate-800/80">
@@ -508,8 +516,8 @@
                     <i data-lucide="github" class="w-4 h-4"></i>
                 </div>
                 <div>
-                    <h3 class="font-bold text-white text-base">GitHub Pending Files Manager</h3>
-                    <p class="text-xs text-slate-400">View and delete files sitting in your GitHub repository's pending folder.</p>
+                    <h3 class="font-bold text-white text-base">GitHub Repository Files Manager</h3>
+                    <p class="text-xs text-slate-400">View, download, and delete files sitting in your GitHub repository.</p>
                 </div>
             </div>
             <button onclick="closeGitHubManagerModal()" class="text-slate-400 hover:text-white p-1">
@@ -517,18 +525,32 @@
             </button>
         </div>
 
+        <!-- Folder Tabs: Pending vs Signed -->
+        <div class="flex border-b border-slate-800 bg-slate-950/50 px-4 pt-2 gap-2">
+            <button id="ghTabPendingBtn" onclick="switchGitHubTab('pending')" class="px-4 py-2 border-b-2 border-sky-500 text-sky-400 font-semibold text-xs flex items-center gap-2 transition">
+                <i data-lucide="clock" class="w-3.5 h-3.5 text-amber-400"></i>
+                <span>Pending Folder</span>
+                <span id="ghTabPendingBadge" class="px-1.5 py-0.5 rounded-full text-[10px] bg-sky-500/20 text-sky-300">0</span>
+            </button>
+            <button id="ghTabSignedBtn" onclick="switchGitHubTab('signed')" class="px-4 py-2 border-b-2 border-transparent text-slate-400 hover:text-slate-200 font-semibold text-xs flex items-center gap-2 transition">
+                <i data-lucide="check-circle-2" class="w-3.5 h-3.5 text-emerald-400"></i>
+                <span>Signed Folder</span>
+                <span id="ghTabSignedBadge" class="px-1.5 py-0.5 rounded-full text-[10px] bg-slate-800 text-slate-400">0</span>
+            </button>
+        </div>
+
         <!-- GitHub Status Banner -->
-        <div class="p-4 bg-slate-950/60 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+        <div class="p-3.5 bg-slate-950/60 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
             <div id="ghModalStatus" class="flex items-center gap-2 text-slate-300">
                 <span class="w-2.5 h-2.5 rounded-full bg-slate-500" id="ghStatusDot"></span>
                 <span id="ghStatusText">Checking GitHub connection...</span>
             </div>
             <div class="flex items-center gap-2">
-                <button onclick="refreshGitHubPendingFiles()" class="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs transition flex items-center gap-1 border border-slate-700">
+                <button onclick="refreshCurrentGitHubFolder()" class="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs transition flex items-center gap-1 border border-slate-700">
                     <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> Refresh
                 </button>
-                <button id="ghClearAllBtn" onclick="clearAllGitHubPendingFiles()" class="px-2.5 py-1.5 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 rounded-lg text-xs font-semibold transition flex items-center gap-1">
-                    <i data-lucide="trash-2" class="w-3.5 h-3.5"></i> Delete All from GitHub
+                <button id="ghClearAllBtn" onclick="clearAllCurrentGitHubFolder()" class="px-2.5 py-1.5 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 rounded-lg text-xs font-semibold transition flex items-center gap-1">
+                    <i data-lucide="trash-2" class="w-3.5 h-3.5"></i> <span id="ghClearBtnLabel">Delete All from GitHub</span>
                 </button>
             </div>
         </div>
@@ -537,7 +559,7 @@
         <div class="flex-1 overflow-auto p-4 space-y-2.5" id="ghFileListContainer">
             <div class="py-8 text-center text-slate-500 text-xs">
                 <i data-lucide="loader-2" class="w-5 h-5 animate-spin mx-auto mb-2 text-sky-400"></i>
-                Loading GitHub pending files...
+                Loading files from GitHub...
             </div>
         </div>
 
@@ -546,12 +568,50 @@
             <div class="flex items-start gap-2">
                 <i data-lucide="info" class="w-4 h-4 text-sky-400 flex-shrink-0 mt-0.5"></i>
                 <div>
-                    <p class="font-semibold text-slate-200">Connect GitHub to enable one-click cloud file deletion</p>
-                    <p class="text-slate-400 text-[11px] mt-0.5">Add your repository (<code class="text-sky-300">owner/repo</code>) and a Personal Access Token in Settings to easily delete files from GitHub or auto-delete after signing.</p>
+                    <p class="font-semibold text-slate-200">Connect GitHub to enable one-click cloud file management</p>
+                    <p class="text-slate-400 text-[11px] mt-0.5">Add your repository (<code class="text-sky-300">owner/repo</code>) and a Personal Access Token in Settings to easily delete or sync files sitting in GitHub's folders.</p>
                 </div>
             </div>
             <button onclick="closeGitHubManagerModal(); openSettingsModal();" class="px-3 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-xs font-semibold transition">
                 Configure GitHub in Settings
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Local PC Auto-Save Folder Setup -->
+<div id="localAutoSaveModal" class="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm hidden items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-md w-full p-5 shadow-2xl space-y-4">
+        <div class="flex justify-between items-center pb-2 border-b border-slate-800">
+            <h3 class="font-bold text-white text-base flex items-center gap-2">
+                <i data-lucide="folder-down" class="w-4 h-4 text-sky-400"></i>
+                Auto-Save to PC Folder
+            </h3>
+            <button onclick="closeLocalAutoSaveModal()" class="text-slate-400 hover:text-white">
+                <i data-lucide="x" class="w-5 h-5"></i>
+            </button>
+        </div>
+        <p class="text-xs text-slate-300 leading-relaxed">
+            Select a folder on your personal computer (e.g. your <strong>OneDrive</strong>, <strong>Documents</strong>, or a local project folder).
+        </p>
+        <div class="bg-slate-950/70 border border-slate-800 rounded-xl p-3 text-xs text-slate-400 space-y-2">
+            <div class="flex items-center gap-2">
+                <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+                <span class="text-white font-medium">How it works:</span>
+            </div>
+            <p class="text-[11px]">Whenever a document is signed on your phone, this dashboard will instantly detect the completed file and save the signed PDF directly into your chosen computer folder.</p>
+        </div>
+        <div id="localAutoSaveCurrentFolderBox" class="hidden bg-sky-950/30 border border-sky-800/40 rounded-xl p-3 text-xs">
+            <span class="text-slate-400 block text-[10px] uppercase font-bold">Current Target Folder</span>
+            <span id="localAutoSaveFolderName" class="text-sky-300 font-semibold truncate block mt-0.5">None</span>
+        </div>
+        <div class="flex flex-col gap-2 pt-2">
+            <button onclick="pickLocalDirectory()" class="w-full py-2.5 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-xs font-semibold transition flex items-center justify-center gap-2 shadow shadow-sky-600/30">
+                <i data-lucide="folder-open" class="w-4 h-4"></i>
+                <span id="btnPickFolderText">Choose Folder on Computer</span>
+            </button>
+            <button id="btnDisableAutoSave" onclick="disableLocalAutoSave()" class="hidden w-full py-2 bg-slate-800 hover:bg-slate-700 text-rose-300 border border-slate-700 rounded-lg text-xs font-medium transition">
+                Turn Off Auto-Save
             </button>
         </div>
     </div>
