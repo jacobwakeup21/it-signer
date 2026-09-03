@@ -443,17 +443,19 @@
                 </div>
                 <div>
                     <label class="block text-[11px] font-medium text-slate-300 mb-1">GitHub Personal Access Token (PAT)</label>
-                    <input type="password" id="setting_github_token" placeholder="ghp_... (with repo / contents write permission)" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white placeholder-slate-500 focus:ring-2 focus:ring-sky-500 focus:outline-none">
-                    <p class="text-[10px] text-slate-400 mt-1">Allows the app to delete files directly from GitHub's Pending folder and push signed PDFs to GitHub.</p>
+                    <input type="password" id="setting_github_token" placeholder="ghp_... or github_pat_... (with Contents: Read and write)" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white placeholder-slate-500 focus:ring-2 focus:ring-sky-500 focus:outline-none">
+                    <div class="text-[10px] text-slate-400 mt-1 space-y-1">
+                        <p>🔑 <strong class="text-slate-300">Fine-grained token:</strong> Must set <em>Repository permissions &rarr; Contents: <strong>Read and write</strong></em> (default Read-only causes 403 error).</p>
+                        <p>💡 <strong class="text-slate-300">Classic token (Recommended):</strong> Check the <code>repo</code> scope (full private repository control).</p>
+                        <p class="text-sky-300/90 bg-sky-950/40 p-1.5 rounded border border-sky-800/40">☁️ <strong class="text-sky-200">Cloud / Render Tip:</strong> To keep credentials permanent across server restarts, add <code>GITHUB_REPO</code> and <code>GITHUB_TOKEN</code> to your Render dashboard <em>Environment Variables</em>.</p>
+                    </div>
                 </div>
-                <div class="grid grid-cols-2 gap-3">
+                <div class="space-y-2">
                     <div>
                         <label class="block text-[11px] font-medium text-slate-300 mb-1">Git Branch</label>
                         <input type="text" id="setting_github_branch" placeholder="main" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:ring-2 focus:ring-sky-500 focus:outline-none">
                     </div>
-                    <div class="flex items-end">
-                        <div id="ghSettingsTestResult" class="text-[11px] font-medium truncate py-1.5"></div>
-                    </div>
+                    <div id="ghSettingsTestResult" class="text-[11px] font-medium py-1"></div>
                 </div>
                 <div class="space-y-1.5 pt-1">
                     <label class="flex items-center gap-2 cursor-pointer">
