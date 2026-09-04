@@ -166,10 +166,10 @@ function renderPendingGrid(files) {
     const container = document.getElementById('pendingContainer');
     if (!files || files.length === 0) {
         container.innerHTML = `
-            <div class="col-span-full bg-slate-800/40 border border-slate-700/60 rounded-2xl p-8 text-center space-y-2">
-                <i data-lucide="folder-open" class="w-8 h-8 mx-auto text-slate-500"></i>
-                <h4 class="text-sm font-semibold text-slate-300">${searchTerm ? 'No matching pending files' : 'No pending files'}</h4>
-                <p class="text-xs text-slate-500">${searchTerm ? 'Try adjusting your search query.' : 'Drag and drop a PDF file above or place it into the pending folder.'}</p>
+            <div class="col-span-full bg-[#0b1329]/60 border border-cyan-500/20 rounded-2xl p-8 text-center space-y-2 shadow-xl">
+                <i data-lucide="folder-open" class="w-8 h-8 mx-auto text-cyan-400/60"></i>
+                <h4 class="text-sm font-semibold text-slate-200">${searchTerm ? 'No matching pending files' : 'No pending files'}</h4>
+                <p class="text-xs text-slate-400">${searchTerm ? 'Try adjusting your search query.' : 'Drag and drop a PDF file above or place it into the pending folder.'}</p>
             </div>
         `;
         if (window.lucide) lucide.createIcons();
@@ -183,13 +183,13 @@ function renderPendingGrid(files) {
         const hwFirst = meta.hardware && meta.hardware.length > 0 ? meta.hardware[0] : null;
 
         return `
-        <div class="doc-card bg-slate-800 border border-slate-700 rounded-2xl p-4 shadow-md flex flex-col justify-between space-y-3">
+        <div class="doc-card bg-[#0b1329]/90 border border-cyan-500/25 hover:border-cyan-400/50 rounded-2xl p-4 shadow-xl shadow-cyan-950/25 flex flex-col justify-between space-y-3 transition">
             <div class="flex items-start gap-3">
                 <!-- Thumbnail -->
-                <div class="w-16 h-20 bg-slate-950 rounded-lg overflow-hidden border border-slate-700 flex-shrink-0 relative group cursor-pointer" onclick="openPdfPreview('pending', '${file.name}', '${file.preview_url}')">
+                <div class="w-16 h-20 bg-[#070c18] rounded-lg overflow-hidden border border-cyan-500/30 flex-shrink-0 relative group cursor-pointer" onclick="openPdfPreview('pending', '${file.name}', '${file.preview_url}')">
                     <img src="${file.preview_url}?zoom=0.8" alt="${file.name}" class="w-full h-full object-cover">
                     <div class="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
-                        <i data-lucide="zoom-in" class="w-4 h-4 text-white"></i>
+                        <i data-lucide="zoom-in" class="w-4 h-4 text-cyan-300"></i>
                     </div>
                 </div>
 
@@ -201,7 +201,7 @@ function renderPendingGrid(files) {
                     <!-- Extracted Metadata Badges -->
                     <div class="mt-1.5 flex flex-wrap gap-1">
                         ${employeeName ? `
-                            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-sky-500/20 text-sky-300 text-[10px] font-semibold border border-sky-500/30 truncate max-w-full">
+                            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-cyan-500/15 text-cyan-300 text-[10px] font-semibold border border-cyan-400/30 truncate max-w-full">
                                 <i data-lucide="user" class="w-2.5 h-2.5"></i> ${employeeName}
                             </span>
                         ` : ''}
@@ -213,10 +213,10 @@ function renderPendingGrid(files) {
                     </div>
 
                     <div class="flex items-center gap-2 mt-2">
-                        <span class="px-1.5 py-0.5 rounded bg-slate-900 text-sky-400 text-[10px] font-mono border border-slate-700">
+                        <span class="px-1.5 py-0.5 rounded bg-[#070c18] text-cyan-400 text-[10px] font-mono border border-cyan-500/25">
                             ${file.size_formatted}
                         </span>
-                        <span class="px-1.5 py-0.5 rounded bg-slate-900 text-slate-300 text-[10px] font-mono border border-slate-700">
+                        <span class="px-1.5 py-0.5 rounded bg-[#070c18] text-slate-300 text-[10px] font-mono border border-slate-700">
                             ${file.page_count} ${file.page_count === 1 ? 'Page' : 'Pages'}
                         </span>
                     </div>
@@ -224,17 +224,17 @@ function renderPendingGrid(files) {
             </div>
 
             <!-- Action buttons -->
-            <div class="pt-2 border-t border-slate-700/60 flex items-center gap-1.5">
-                <button onclick="showDocQr('${file.name}', '${directSignUrl}')" class="flex-1 py-1.5 bg-sky-600/20 hover:bg-sky-600/30 text-sky-400 border border-sky-500/30 rounded-lg text-xs font-medium transition flex items-center justify-center gap-1">
+            <div class="pt-2 border-t border-cyan-500/15 flex items-center gap-1.5">
+                <button onclick="showDocQr('${file.name}', '${directSignUrl}')" class="flex-1 py-1.5 bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-400/30 rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1 shadow-sm">
                     <i data-lucide="qr-code" class="w-3.5 h-3.5"></i> QR
                 </button>
-                <a href="/sign/${encodeURIComponent(file.name)}" class="flex-1 py-1.5 bg-slate-700 hover:bg-slate-600 text-white rounded-lg text-xs font-medium transition flex items-center justify-center gap-1">
-                    <i data-lucide="pen" class="w-3.5 h-3.5"></i> Sign
+                <a href="/sign/${encodeURIComponent(file.name)}" class="flex-1 py-1.5 bg-[#101c3d] hover:bg-[#182b5c] text-white border border-cyan-500/30 rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1">
+                    <i data-lucide="pen" class="w-3.5 h-3.5 text-cyan-400"></i> Sign
                 </a>
-                <button onclick="openCalibratorModal('${file.name}')" class="p-1.5 bg-slate-700/70 hover:bg-slate-700 text-sky-300 rounded-lg text-xs transition" title="Calibrate placement on this PDF">
+                <button onclick="openCalibratorModal('${file.name}')" class="p-1.5 bg-[#101c3d] hover:bg-[#182b5c] text-cyan-300 border border-cyan-500/20 rounded-lg text-xs transition" title="Calibrate placement on this PDF">
                     <i data-lucide="move" class="w-3.5 h-3.5"></i>
                 </button>
-                <a href="${file.download_url}" target="_blank" class="p-1.5 bg-slate-700/70 hover:bg-slate-700 text-slate-300 rounded-lg text-xs transition" title="Download original">
+                <a href="${file.download_url}" target="_blank" class="p-1.5 bg-[#101c3d] hover:bg-[#182b5c] text-cyan-300 border border-cyan-500/20 rounded-lg text-xs transition" title="Download original">
                     <i data-lucide="download" class="w-3.5 h-3.5"></i>
                 </a>
                 <button data-filename="${encodeURIComponent(file.name)}" onclick="deleteDocument('pending', decodeURIComponent(this.getAttribute('data-filename')))" class="p-1.5 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 rounded-lg text-xs transition" title="Delete file">
@@ -252,10 +252,10 @@ function renderSignedGrid(files) {
     const container = document.getElementById('signedContainer');
     if (!files || files.length === 0) {
         container.innerHTML = `
-            <div class="col-span-full bg-slate-800/40 border border-slate-700/60 rounded-2xl p-8 text-center space-y-2">
-                <i data-lucide="check-circle" class="w-8 h-8 mx-auto text-slate-500"></i>
-                <h4 class="text-sm font-semibold text-slate-300">${searchTerm ? 'No matching signed documents' : 'No signed documents yet'}</h4>
-                <p class="text-xs text-slate-500">${searchTerm ? 'Try adjusting your search query.' : 'Signed PDFs with embedded signatures will automatically appear here.'}</p>
+            <div class="col-span-full bg-[#0b1329]/60 border border-cyan-500/20 rounded-2xl p-8 text-center space-y-2 shadow-xl">
+                <i data-lucide="check-circle" class="w-8 h-8 mx-auto text-emerald-400/60"></i>
+                <h4 class="text-sm font-semibold text-slate-200">${searchTerm ? 'No matching signed documents' : 'No signed documents yet'}</h4>
+                <p class="text-xs text-slate-400">${searchTerm ? 'Try adjusting your search query.' : 'Signed PDFs with embedded signatures will automatically appear here.'}</p>
             </div>
         `;
         if (window.lucide) lucide.createIcons();
@@ -267,13 +267,13 @@ function renderSignedGrid(files) {
         const employeeName = meta.employee_name;
 
         return `
-        <div class="doc-card bg-slate-800 border border-slate-700 rounded-2xl p-4 shadow-md flex flex-col justify-between space-y-3">
+        <div class="doc-card bg-[#0b1329]/90 border border-emerald-500/30 hover:border-emerald-400/50 rounded-2xl p-4 shadow-xl shadow-emerald-950/20 flex flex-col justify-between space-y-3 transition">
             <div class="flex items-start gap-3">
                 <!-- Thumbnail showing signature -->
-                <div class="w-16 h-20 bg-slate-950 rounded-lg overflow-hidden border border-emerald-500/30 flex-shrink-0 relative group cursor-pointer" onclick="openPdfPreview('signed', '${file.name}', '${file.last_page_preview_url || file.preview_url}')">
+                <div class="w-16 h-20 bg-[#070c18] rounded-lg overflow-hidden border border-emerald-500/30 flex-shrink-0 relative group cursor-pointer" onclick="openPdfPreview('signed', '${file.name}', '${file.last_page_preview_url || file.preview_url}')">
                     <img src="${file.last_page_preview_url || file.preview_url}?zoom=0.8" alt="${file.name}" class="w-full h-full object-cover">
                     <div class="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
-                        <i data-lucide="zoom-in" class="w-4 h-4 text-white"></i>
+                        <i data-lucide="zoom-in" class="w-4 h-4 text-emerald-300"></i>
                     </div>
                 </div>
 
@@ -284,14 +284,14 @@ function renderSignedGrid(files) {
                     
                     ${employeeName ? `
                         <div class="mt-1">
-                            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[10px] font-semibold border border-emerald-500/30 truncate max-w-full">
+                            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-cyan-500/15 text-cyan-300 text-[10px] font-semibold border border-cyan-400/30 truncate max-w-full">
                                 <i data-lucide="user" class="w-2.5 h-2.5"></i> ${employeeName}
                             </span>
                         </div>
                     ` : ''}
 
                     <div class="flex items-center gap-2 mt-2">
-                        <span class="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 text-[10px] font-semibold flex items-center gap-1 border border-emerald-500/20">
+                        <span class="px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 text-[10px] font-semibold flex items-center gap-1 border border-emerald-500/30">
                             <i data-lucide="check" class="w-3 h-3"></i> Signed
                         </span>
                         <span class="text-[10px] text-slate-400 font-mono">${file.size_formatted}</span>
@@ -300,11 +300,11 @@ function renderSignedGrid(files) {
             </div>
 
             <!-- Action buttons -->
-            <div class="pt-2 border-t border-slate-700/60 flex items-center gap-1.5">
-                <a href="${file.download_url}" target="_blank" class="flex-1 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1.5">
+            <div class="pt-2 border-t border-emerald-500/20 flex items-center gap-1.5">
+                <a href="${file.download_url}" target="_blank" class="flex-1 py-1.5 bg-gradient-to-r from-emerald-600/20 to-teal-600/20 hover:from-emerald-600/30 hover:to-teal-600/30 text-emerald-300 border border-emerald-500/30 rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1.5 shadow-sm">
                     <i data-lucide="download" class="w-3.5 h-3.5"></i> Download PDF
                 </a>
-                <button onclick="openPdfPreview('signed', '${file.name}', '${file.last_page_preview_url || file.preview_url}')" class="p-1.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-xs transition" title="Preview document">
+                <button onclick="openPdfPreview('signed', '${file.name}', '${file.last_page_preview_url || file.preview_url}')" class="p-1.5 bg-[#101c3d] hover:bg-[#182b5c] text-cyan-300 border border-cyan-500/20 rounded-lg text-xs transition" title="Preview document">
                     <i data-lucide="eye" class="w-3.5 h-3.5"></i>
                 </button>
                 <button onclick="deleteDocument('signed', '${file.name}')" class="p-1.5 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 rounded-lg text-xs transition" title="Remove signed document">
