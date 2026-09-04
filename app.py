@@ -10,7 +10,11 @@ import zipfile
 import urllib.request
 import urllib.error
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+try:
+    import zoneinfo
+except ImportError:
+    zoneinfo = None
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, send_file, send_from_directory, redirect, url_for
 import pymupdf
@@ -28,6 +32,7 @@ DEFAULT_CONFIG = {
     "host": "0.0.0.0",
     "port": 5000,
     "public_url": "",
+    "timezone": "Europe/Prague",
     "pending_dir": "pending",
     "signed_dir": "signed",
     "archive_dir": "pending/.archive",
@@ -140,6 +145,74 @@ def format_file_size(size_bytes):
         return f"{size_bytes / 1024:.1f} KB"
     else:
         return f"{size_bytes / (1024 * 1024):.2f} MB"
+
+def get_signature_timestamp(data=None, config=None):
+    """
+    Get the localized timestamp string for signing documents.
+    Prevents timestamps being offset (e.g. 2 hours off on UTC cloud servers like Render/Docker).
+    Priority:
+    1. Direct client timestamp sent from device (phone or PC): 'YYYY-MM-DD HH:MM:SS'
+    2. Client timezone offset (minutes) sent from browser/device
+    3. Client timezone name (e.g. 'Europe/Prague', 'Europe/Bratislava', 'Europe/Helsinki')
+    4. Configured server timezone (config.json 'timezone' or env vars TZ / APP_TIMEZONE)
+    5. Server local time (fallback)
+    """
+    data = data or {}
+    config = config or {}
+
+    # 1. Direct client timestamp from signing device (phone or PC)
+    client_ts = (data.get('client_timestamp') or data.get('timestamp') or '').strip()
+    if client_ts:
+        m = re.match(r'^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(?::(\d{2}))?$', client_ts)
+        if m:
+            date_part, time_hm, time_s = m.groups()
+            sec = f":{time_s}" if time_s else ":00"
+            return f"{date_part} {time_hm}{sec}"
+
+    # 2. Client timezone offset (JavaScript getTimezoneOffset() is in minutes)
+    tz_offset = data.get('client_tz_offset')
+    if tz_offset is not None:
+        try:
+            offset_mins = int(tz_offset)
+            # In JS: getTimezoneOffset() returns minutes where UTC = local + offset.
+            # Therefore local = UTC - offset. (e.g. UTC+2 gives -120 -> UTC - (-120) = UTC + 120min)
+            local_dt = datetime.now(timezone.utc) - timedelta(minutes=offset_mins)
+            return local_dt.strftime('%Y-%m-%d %H:%M:%S')
+        except Exception as e:
+            print(f"Notice: Error calculating time from client_tz_offset: {e}")
+
+    # 3. Client timezone name (e.g. 'Europe/Prague')
+    client_tz_name = (data.get('client_timezone') or '').strip()
+    if client_tz_name and zoneinfo is not None:
+        try:
+            tz = zoneinfo.ZoneInfo(client_tz_name)
+            return datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')
+        except Exception:
+            pass
+
+    # 4. Configured server timezone (config.json 'timezone' or env vars TZ / APP_TIMEZONE)
+    cfg_tz_name = config.get('timezone') or os.environ.get('APP_TIMEZONE') or os.environ.get('TZ')
+    if cfg_tz_name and cfg_tz_name.lower() != 'auto' and zoneinfo is not None:
+        try:
+            tz = zoneinfo.ZoneInfo(cfg_tz_name)
+            return datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S')
+        except Exception as e:
+            print(f"Notice: Error applying configured timezone '{cfg_tz_name}': {e}")
+
+    # 5. Default fallback to server local time
+    return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+def format_timestamp_localized(epoch_sec, config=None, fmt='%Y-%m-%d %H:%M:%S'):
+    """Format an epoch timestamp using configured timezone if available, or server time."""
+    config = config or {}
+    cfg_tz_name = config.get('timezone') or os.environ.get('APP_TIMEZONE') or os.environ.get('TZ')
+    if cfg_tz_name and cfg_tz_name.lower() != 'auto' and zoneinfo is not None:
+        try:
+            tz = zoneinfo.ZoneInfo(cfg_tz_name)
+            return datetime.fromtimestamp(epoch_sec, tz=timezone.utc).astimezone(tz).strftime(fmt)
+        except Exception:
+            pass
+    return datetime.fromtimestamp(epoch_sec).strftime(fmt)
 
 def get_github_config():
     """Retrieve normalized GitHub settings from config or environment variables."""
@@ -494,7 +567,7 @@ def mobile_sign(filename):
         
     page_count = get_pdf_metadata(file_path)
     file_size = format_file_size(file_path.stat().st_size)
-    mod_time = datetime.fromtimestamp(file_path.stat().st_mtime).strftime('%Y-%m-%d %H:%M')
+    mod_time = format_timestamp_localized(file_path.stat().st_mtime, config, '%Y-%m-%d %H:%M')
     metadata = extract_pdf_metadata(file_path)
     
     return render_template('sign.html', 
@@ -538,7 +611,7 @@ def api_documents():
                         "size_bytes": stat.st_size,
                         "size_formatted": format_file_size(stat.st_size),
                         "modified_timestamp": stat.st_mtime,
-                        "modified_formatted": datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S'),
+                        "modified_formatted": format_timestamp_localized(stat.st_mtime, config, '%Y-%m-%d %H:%M:%S'),
                         "page_count": page_count,
                         "metadata": metadata,
                         "preview_url": f"/api/preview/{'pending' if is_pending else 'signed'}/{entry.name}/1",
@@ -766,6 +839,9 @@ def api_sign(filename):
         doc = pymupdf.open(str(source_path))
         num_pages = len(doc)
         
+        # Resolve localized signing timestamp (client device time or configured timezone)
+        sig_timestamp = get_signature_timestamp(data, config)
+
         # Helper to apply one signature
         def apply_signature_to_page(sig_bytes, placement_info, label_name):
             target_p = placement_info.get('page', -1)
@@ -788,10 +864,9 @@ def api_sign(filename):
             target_page.insert_image(rect, stream=sig_bytes, keep_proportion=keep_aspect, overlay=True)
 
             if add_ts or label_name:
-                now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                stamp_text = f"Digitally Signed: {now_str}"
+                stamp_text = f"Digitally Signed: {sig_timestamp}"
                 if label_name:
-                    stamp_text = f"Signed by: {label_name} | {now_str}"
+                    stamp_text = f"Signed by: {label_name} | {sig_timestamp}"
                 target_page.insert_text(
                     (sx, sy + sh + 10),
                     stamp_text,
@@ -819,8 +894,9 @@ def api_sign(filename):
         output_path = signed_dir / signed_filename
         
         if output_path.exists():
-            ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-            signed_filename = f"{stem}_signed_{ts}.pdf"
+            ts_digits = re.sub(r'[^0-9]', '', sig_timestamp)[:14]
+            ts_file = f"{ts_digits[:8]}_{ts_digits[8:]}" if len(ts_digits) == 14 else datetime.now().strftime('%Y%m%d_%H%M%S')
+            signed_filename = f"{stem}_signed_{ts_file}.pdf"
             output_path = signed_dir / signed_filename
 
         # Save signed document
@@ -833,7 +909,9 @@ def api_sign(filename):
                 archive_dir.mkdir(parents=True, exist_ok=True)
                 archived_path = archive_dir / source_path.name
                 if archived_path.exists():
-                    archived_path = archive_dir / f"{source_path.stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+                    ts_digits = re.sub(r'[^0-9]', '', sig_timestamp)[:14]
+                    ts_file = f"{ts_digits[:8]}_{ts_digits[8:]}" if len(ts_digits) == 14 else datetime.now().strftime('%Y%m%d_%H%M%S')
+                    archived_path = archive_dir / f"{source_path.stem}_{ts_file}.pdf"
                 source_path.rename(archived_path)
             except Exception as e:
                 print(f"Notice: could not move pending file to archive: {e}")

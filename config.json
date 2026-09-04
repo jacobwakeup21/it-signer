@@ -2,6 +2,7 @@
     "host": "0.0.0.0",
     "port": 5000,
     "public_url": "",
+    "timezone": "Europe/Prague",
     "pending_dir": "pending",
     "signed_dir": "signed",
     "archive_dir": "pending/.archive",
