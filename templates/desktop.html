@@ -484,6 +484,20 @@
                 <span class="text-[10px] text-slate-400">For phone access over cellular data when deployed on Render or Cloudflare Tunnel.</span>
             </div>
 
+            <!-- Timezone Fallback -->
+            <div class="pt-2 border-t border-slate-700">
+                <label class="block text-xs font-medium text-slate-300 mb-1">Server Fallback Timezone <span class="text-slate-500 font-normal">(for cloud servers like Render)</span></label>
+                <select id="setting_timezone" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:ring-2 focus:ring-sky-500 focus:outline-none">
+                    <option value="Europe/Prague">Europe/Prague / Bratislava (CET/CEST, UTC+1/+2)</option>
+                    <option value="Europe/Helsinki">Europe/Helsinki (EET/EEST, UTC+2/+3)</option>
+                    <option value="Europe/Berlin">Europe/Berlin (CET/CEST, UTC+1/+2)</option>
+                    <option value="Europe/London">Europe/London (GMT/BST, UTC+0/+1)</option>
+                    <option value="America/New_York">America/New_York (EST/EDT, UTC-5/-4)</option>
+                    <option value="UTC">UTC (Coordinated Universal Time)</option>
+                </select>
+                <span class="text-[10px] text-slate-400">Signatures automatically match the phone/computer device time. This timezone acts as server fallback.</span>
+            </div>
+
             <div class="space-y-2 pt-2 border-t border-slate-700">
                 <label class="flex items-center gap-2 cursor-pointer">
                     <input type="checkbox" id="setting_timestamp" class="rounded bg-slate-900 border-slate-700 text-sky-500 focus:ring-sky-500">
