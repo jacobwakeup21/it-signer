@@ -1,0 +1,82 @@
+/* Custom Styles for IT Signer */
+
+@layer utilities {
+    /* Custom scrollbar matching midnight cyan theme */
+    ::-webkit-scrollbar {
+        width: 6px;
+        height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+        background: #070c18;
+    }
+    ::-webkit-scrollbar-thumb {
+        background: #1e293b;
+        border-radius: 4px;
+        border: 1px solid rgba(6, 182, 212, 0.2);
+    }
+    ::-webkit-scrollbar-thumb:hover {
+        background: #0284c7;
+    }
+}
+
+/* Subtle tech grid background matching the logo's network node theme */
+.cyber-grid {
+    background-image: 
+        radial-gradient(rgba(6, 182, 212, 0.08) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(7, 12, 24, 0.8), rgba(7, 12, 24, 0.98));
+    background-size: 28px 28px, 100% 100%;
+}
+
+/* Canvas styling & Apple iOS Safari Touch Optimization */
+.signature-wrapper {
+    touch-action: none !important;
+    overscroll-behavior: contain !important;
+    -webkit-user-select: none !important;
+    user-select: none !important;
+    -webkit-touch-callout: none !important;
+    -webkit-tap-highlight-color: transparent;
+}
+
+canvas#signatureCanvas {
+    touch-action: none !important;
+    overscroll-behavior: none !important;
+    user-select: none !important;
+    -webkit-user-select: none !important;
+    -webkit-touch-callout: none !important;
+    -webkit-tap-highlight-color: transparent;
+    cursor: crosshair;
+}
+
+/* Apple iOS Safe Area Utility Classes */
+.safe-pb {
+    padding-bottom: max(2rem, calc(env(safe-area-inset-bottom, 0px) + 1.5rem));
+}
+.safe-pt {
+    padding-top: max(0.85rem, env(safe-area-inset-top, 0px));
+}
+
+/* Drag and Drop Zone animations */
+#dropZone.dragover {
+    border-color: #38bdf8 !important;
+    background-color: rgba(56, 189, 248, 0.1) !important;
+    transform: scale(1.01);
+}
+
+/* Card hover transitions */
+.doc-card {
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.doc-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3), 0 8px 10px -6px rgba(0, 0, 0, 0.3);
+}
+
+/* Prevent text selection during touch or Apple Pencil signing */
+.no-select {
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    -khtml-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+    user-select: none;
+}
