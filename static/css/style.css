@@ -18,12 +18,32 @@
     }
 }
 
-/* Canvas styling */
+/* Canvas styling & Apple iOS Safari Touch Optimization */
+.signature-wrapper {
+    touch-action: none !important;
+    overscroll-behavior: contain !important;
+    -webkit-user-select: none !important;
+    user-select: none !important;
+    -webkit-touch-callout: none !important;
+    -webkit-tap-highlight-color: transparent;
+}
+
 canvas#signatureCanvas {
-    touch-action: none;
-    user-select: none;
-    -webkit-user-select: none;
+    touch-action: none !important;
+    overscroll-behavior: none !important;
+    user-select: none !important;
+    -webkit-user-select: none !important;
+    -webkit-touch-callout: none !important;
+    -webkit-tap-highlight-color: transparent;
     cursor: crosshair;
+}
+
+/* Apple iOS Safe Area Utility Classes */
+.safe-pb {
+    padding-bottom: max(2rem, calc(env(safe-area-inset-bottom, 0px) + 1.5rem));
+}
+.safe-pt {
+    padding-top: max(0.85rem, env(safe-area-inset-top, 0px));
 }
 
 /* Drag and Drop Zone animations */
@@ -42,7 +62,7 @@ canvas#signatureCanvas {
     box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3), 0 8px 10px -6px rgba(0, 0, 0, 0.3);
 }
 
-/* Prevent text selection during stylus signing */
+/* Prevent text selection during touch or Apple Pencil signing */
 .no-select {
     -webkit-touch-callout: none;
     -webkit-user-select: none;
