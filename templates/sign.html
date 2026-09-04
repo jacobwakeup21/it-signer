@@ -26,7 +26,7 @@
 {% endblock %}
 
 {% block content %}
-<div class="max-w-2xl mx-auto space-y-4 pb-12">
+<div class="max-w-2xl mx-auto space-y-4 pb-12" style="padding-bottom: max(3rem, calc(env(safe-area-inset-bottom, 0px) + 2rem));">
     <!-- Top Bar / Document Meta -->
     <div class="bg-slate-800 border border-slate-700/80 rounded-2xl p-4 shadow-md flex items-center justify-between gap-3">
         <div class="flex items-center gap-3 min-w-0">
@@ -237,7 +237,11 @@ document.addEventListener('DOMContentLoaded', () => {
     updateLiveTime();
     setInterval(updateLiveTime, 1000);
     window.addEventListener('resize', debounceResize);
-    window.addEventListener('orientationchange', debounceResize);
+    window.addEventListener('orientationchange', () => {
+        debounceResize();
+        setTimeout(resizeCanvas, 150);
+        setTimeout(resizeCanvas, 350);
+    });
     setTimeout(resizeCanvas, 150);
 });
 
@@ -280,6 +284,18 @@ function setSignRole(role) {
 function initSignaturePad() {
     const canvas = document.getElementById('signatureCanvas');
     if (!canvas) return;
+
+    // Critical Apple iPhone & iPad Safari Fixes:
+    // Prevent iOS page scrolling, elastic bounce, and pinch-to-zoom over canvas
+    const preventIOSGestures = (e) => {
+        if (e.target === canvas && e.cancelable) {
+            e.preventDefault();
+        }
+    };
+    canvas.addEventListener('touchstart', preventIOSGestures, { passive: false });
+    canvas.addEventListener('touchmove', preventIOSGestures, { passive: false });
+    canvas.addEventListener('gesturestart', preventIOSGestures, { passive: false });
+    canvas.addEventListener('gesturechange', preventIOSGestures, { passive: false });
 
     if (typeof SignaturePad !== 'undefined') {
         try {

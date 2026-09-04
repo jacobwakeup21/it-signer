@@ -3,7 +3,24 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>{% block title %}IT Handover Signer{% endblock %}</title>
+    <title>{% block title %}IT Signer — Mobile & Desktop Digital Signature Hub{% endblock %}</title>
+
+    <!-- Apple iOS Safari & Mobile Web App Meta Tags -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="IT Signer">
+    <meta name="application-name" content="IT Signer">
+    <meta name="theme-color" content="#0f172a">
+    <meta name="format-detection" content="telephone=no">
+
+    <!-- Web App Manifest -->
+    <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}">
+
+    <!-- Favicon & Apple Touch Icons -->
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='img/logo.svg') }}">
+    <link rel="alternate icon" type="image/png" href="{{ url_for('static', filename='img/favicon.png') }}">
+    <link rel="apple-touch-icon" sizes="180x180" href="{{ url_for('static', filename='img/apple-touch-icon.png') }}">
+
     <!-- Tailwind CSS CDN with fallback -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
@@ -37,15 +54,13 @@
     <header class="bg-slate-800/95 backdrop-blur border-b border-slate-700/80 sticky top-0 z-40 pt-3.5 sm:pt-0" style="padding-top: max(0.85rem, env(safe-area-inset-top));">
         <div class="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 min-h-[4.25rem] sm:h-16 py-2 sm:py-0 flex items-center justify-between gap-2">
             <a href="/" class="flex items-center space-x-2.5 sm:space-x-3 group min-w-0">
-                <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-sky-600 to-indigo-500 flex items-center justify-center shadow-lg shadow-sky-500/20 group-hover:scale-105 transition flex-shrink-0">
-                    <i data-lucide="pen-tool" class="w-5 h-5 text-white"></i>
-                </div>
+                <img src="{{ url_for('static', filename='img/logo.svg') }}" alt="IT Signer Logo" class="w-10 h-10 rounded-xl shadow-lg shadow-sky-500/20 group-hover:scale-105 transition flex-shrink-0 object-contain">
                 <div class="min-w-0">
                     <h1 class="text-sm sm:text-lg font-bold text-white tracking-tight flex flex-wrap items-center gap-1.5 sm:gap-2 leading-tight">
-                        <span class="truncate">IT Handover Signer</span>
-                        <span class="text-[9px] sm:text-[10px] uppercase font-semibold px-1.5 sm:px-2 py-0.5 rounded-full bg-sky-500/20 text-sky-400 border border-sky-500/30 whitespace-nowrap">Mobile Touch</span>
+                        <span class="truncate">IT Signer</span>
+                        <span class="text-[9px] sm:text-[10px] uppercase font-semibold px-1.5 sm:px-2 py-0.5 rounded-full bg-sky-500/20 text-sky-400 border border-sky-500/30 whitespace-nowrap">iOS &bull; Android &bull; PC</span>
                     </h1>
-                    <p class="text-[10px] sm:text-xs text-slate-400 truncate mt-0.5">Android & Desktop Digital Signature Hub</p>
+                    <p class="text-[10px] sm:text-xs text-slate-400 truncate mt-0.5">Mobile & Desktop Digital Signature Hub</p>
                 </div>
             </a>
 
@@ -72,12 +87,12 @@
     <footer class="bg-slate-900 border-t border-slate-800 text-slate-500 text-xs py-4">
         <div class="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row justify-between items-center gap-2 text-center sm:text-left">
             <div>
-                Powered by <span class="text-slate-300 font-medium">PyMuPDF</span> & <span class="text-slate-300 font-medium">SignaturePad.js</span> • Local IT Workflow
+                Powered by <span class="text-slate-300 font-medium">PyMuPDF</span> & <span class="text-slate-300 font-medium">SignaturePad.js</span> • Apple iOS, Android & Desktop IT Workflow
             </div>
             <div class="flex items-center gap-4">
                 <span class="inline-flex items-center gap-1.5 text-emerald-400 font-mono text-[11px]">
                     <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                    Ready for Touch Input
+                    Touch & Apple Pencil Ready
                 </span>
             </div>
         </div>
