@@ -10,15 +10,14 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="IT Signer">
     <meta name="application-name" content="IT Signer">
-    <meta name="theme-color" content="#0f172a">
+    <meta name="theme-color" content="#070c18">
     <meta name="format-detection" content="telephone=no">
 
     <!-- Web App Manifest -->
     <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}">
 
     <!-- Favicon & Apple Touch Icons -->
-    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='img/logo.svg') }}">
-    <link rel="alternate icon" type="image/png" href="{{ url_for('static', filename='img/favicon.png') }}">
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='img/favicon.png') }}">
     <link rel="apple-touch-icon" sizes="180x180" href="{{ url_for('static', filename='img/apple-touch-icon.png') }}">
 
     <!-- Tailwind CSS CDN with fallback -->
@@ -29,15 +28,17 @@
             theme: {
                 extend: {
                     colors: {
-                        brand: {
-                            50: '#f0f7ff',
-                            100: '#e0effe',
-                            200: '#bae0fd',
-                            500: '#0284c7',
-                            600: '#0369a1',
-                            700: '#075985',
-                            800: '#0c4a6e',
-                            900: '#082f49',
+                        midnight: {
+                            950: '#050913',
+                            900: '#070c18',
+                            800: '#0b1329',
+                            700: '#101c3d',
+                            600: '#182b5c',
+                        },
+                        neon: {
+                            cyan: '#00f0ff',
+                            mint: '#00f5d4',
+                            blue: '#0ea5e9',
                         }
                     }
                 }
@@ -49,29 +50,32 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     {% block head %}{% endblock %}
 </head>
-<body class="bg-slate-900 text-slate-100 min-h-screen flex flex-col font-sans antialiased selection:bg-sky-500 selection:text-white">
+<body class="bg-[#070c18] text-slate-100 min-h-screen flex flex-col font-sans antialiased selection:bg-cyan-500 selection:text-slate-950 cyber-grid">
     <!-- Navigation / Header -->
-    <header class="bg-slate-800/95 backdrop-blur border-b border-slate-700/80 sticky top-0 z-40 pt-3.5 sm:pt-0" style="padding-top: max(0.85rem, env(safe-area-inset-top));">
+    <header class="bg-[#0b1329]/90 backdrop-blur-xl border-b border-cyan-500/20 sticky top-0 z-40 pt-3.5 sm:pt-0 shadow-[0_4px_30px_-5px_rgba(6,182,212,0.15)]" style="padding-top: max(0.85rem, env(safe-area-inset-top));">
         <div class="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 min-h-[4.25rem] sm:h-16 py-2 sm:py-0 flex items-center justify-between gap-2">
-            <a href="/" class="flex items-center space-x-2.5 sm:space-x-3 group min-w-0">
-                <img src="{{ url_for('static', filename='img/logo.svg') }}" alt="IT Signer Logo" class="w-10 h-10 rounded-xl shadow-lg shadow-sky-500/20 group-hover:scale-105 transition flex-shrink-0 object-contain">
+            <a href="/" class="flex items-center space-x-3 group min-w-0">
+                <div class="relative flex-shrink-0">
+                    <img src="{{ url_for('static', filename='img/logo-mark.png') }}" alt="IT Signer Logo" class="w-11 h-11 rounded-xl shadow-lg shadow-cyan-500/30 ring-1 ring-cyan-400/50 group-hover:ring-cyan-300 group-hover:scale-105 transition-all duration-200 object-cover bg-[#070c18]">
+                    <span class="absolute -bottom-1 -right-1 w-3 h-3 rounded-full bg-emerald-400 ring-2 ring-[#0b1329] animate-pulse"></span>
+                </div>
                 <div class="min-w-0">
-                    <h1 class="text-sm sm:text-lg font-bold text-white tracking-tight flex flex-wrap items-center gap-1.5 sm:gap-2 leading-tight">
-                        <span class="truncate">IT Signer</span>
-                        <span class="text-[9px] sm:text-[10px] uppercase font-semibold px-1.5 sm:px-2 py-0.5 rounded-full bg-sky-500/20 text-sky-400 border border-sky-500/30 whitespace-nowrap">iOS &bull; Android &bull; PC</span>
+                    <h1 class="text-sm sm:text-lg font-extrabold tracking-tight flex flex-wrap items-center gap-1.5 sm:gap-2 leading-tight">
+                        <span class="bg-gradient-to-r from-white via-cyan-100 to-cyan-300 bg-clip-text text-transparent">IT Signer</span>
+                        <span class="text-[9px] sm:text-[10px] uppercase font-bold px-2 py-0.5 rounded-full bg-cyan-500/15 text-cyan-300 border border-cyan-400/30 shadow-[0_0_12px_rgba(6,182,212,0.25)] whitespace-nowrap">iOS &bull; Android &bull; PC</span>
                     </h1>
-                    <p class="text-[10px] sm:text-xs text-slate-400 truncate mt-0.5">Mobile & Desktop Digital Signature Hub</p>
+                    <p class="text-[10px] sm:text-xs text-slate-400 font-medium truncate mt-0.5">Mobile & Desktop Digital Signature Hub</p>
                 </div>
             </a>
 
-            <nav class="flex items-center space-x-1 sm:space-x-2 flex-shrink-0">
-                <a href="/" class="px-2.5 py-1.5 sm:px-3 sm:py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-300 hover:text-white hover:bg-slate-700/60 transition flex items-center gap-1 sm:gap-1.5">
-                    <i data-lucide="monitor" class="w-3.5 h-3.5 sm:w-4 sm:h-4"></i>
-                    <span class="hidden sm:inline">Desktop</span>
+            <nav class="flex items-center space-x-1.5 sm:space-x-2 flex-shrink-0">
+                <a href="/" class="px-3 py-1.5 rounded-xl text-xs sm:text-sm font-semibold text-slate-300 hover:text-white hover:bg-cyan-500/10 hover:border-cyan-500/30 border border-transparent transition flex items-center gap-1.5">
+                    <i data-lucide="monitor" class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-cyan-400"></i>
+                    <span class="hidden sm:inline">Desktop Hub</span>
                 </a>
-                <a href="/mobile" class="px-2.5 py-1.5 sm:px-3 sm:py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-300 hover:text-white hover:bg-slate-700/60 transition flex items-center gap-1 sm:gap-1.5">
-                    <i data-lucide="smartphone" class="w-3.5 h-3.5 sm:w-4 sm:h-4"></i>
-                    <span class="text-xs sm:text-sm">Mobile View</span>
+                <a href="/mobile" class="px-3 py-1.5 rounded-xl text-xs sm:text-sm font-semibold bg-gradient-to-r from-cyan-500/20 via-sky-500/20 to-indigo-500/20 text-cyan-300 border border-cyan-400/40 hover:border-cyan-300 hover:shadow-cyan-500/30 transition flex items-center gap-1.5 shadow-[0_0_15px_rgba(6,182,212,0.15)]">
+                    <i data-lucide="smartphone" class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-cyan-300"></i>
+                    <span class="text-xs sm:text-sm font-bold">Mobile Sign</span>
                 </a>
                 {% block nav_extra %}{% endblock %}
             </nav>
@@ -84,14 +88,15 @@
     </main>
 
     <!-- Footer -->
-    <footer class="bg-slate-900 border-t border-slate-800 text-slate-500 text-xs py-4">
-        <div class="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row justify-between items-center gap-2 text-center sm:text-left">
-            <div>
-                Powered by <span class="text-slate-300 font-medium">PyMuPDF</span> & <span class="text-slate-300 font-medium">SignaturePad.js</span> • Apple iOS, Android & Desktop IT Workflow
+    <footer class="bg-[#050913] border-t border-cyan-500/15 text-slate-400 text-xs py-5">
+        <div class="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row justify-between items-center gap-3 text-center sm:text-left">
+            <div class="flex items-center gap-2">
+                <img src="{{ url_for('static', filename='img/logo-mark.png') }}" alt="" class="w-5 h-5 rounded-md object-cover ring-1 ring-cyan-500/30">
+                <span><strong class="text-slate-200">IT Signer</strong> • Powered by <span class="text-cyan-300 font-medium">PyMuPDF</span> & <span class="text-cyan-300 font-medium">SignaturePad.js</span></span>
             </div>
             <div class="flex items-center gap-4">
-                <span class="inline-flex items-center gap-1.5 text-emerald-400 font-mono text-[11px]">
-                    <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                <span class="inline-flex items-center gap-2 text-cyan-300 font-mono text-[11px] bg-cyan-500/10 px-2.5 py-1 rounded-full border border-cyan-400/30">
+                    <span class="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_#34d399] animate-pulse"></span>
                     Touch & Apple Pencil Ready
                 </span>
             </div>
