@@ -44,6 +44,15 @@ document.addEventListener('DOMContentLoaded', () => {
     setInterval(checkGitHubStatus, 15000);
 });
 
+function formatLocalTime(epochSec, fallbackStr) {
+    if (epochSec && typeof epochSec === 'number') {
+        const d = new Date(epochSec * 1000);
+        const pad = n => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    }
+    return fallbackStr || '';
+}
+
 function getBaseUrl() {
     if (currentIp.startsWith('http://') || currentIp.startsWith('https://')) {
         return currentIp.replace(/\/+$/, '');
@@ -187,7 +196,7 @@ function renderPendingGrid(files) {
                 <!-- Info -->
                 <div class="flex-1 min-w-0">
                     <h4 class="text-xs font-bold text-white truncate" title="${file.name}">${file.name}</h4>
-                    <p class="text-[11px] text-slate-400 mt-0.5">${file.modified_formatted}</p>
+                    <p class="text-[11px] text-slate-400 mt-0.5">${formatLocalTime(file.modified_timestamp, file.modified_formatted)}</p>
 
                     <!-- Extracted Metadata Badges -->
                     <div class="mt-1.5 flex flex-wrap gap-1">
@@ -271,7 +280,7 @@ function renderSignedGrid(files) {
                 <!-- Info -->
                 <div class="flex-1 min-w-0">
                     <h4 class="text-xs font-bold text-white truncate" title="${file.name}">${file.name}</h4>
-                    <p class="text-[11px] text-slate-400 mt-0.5">${file.modified_formatted}</p>
+                    <p class="text-[11px] text-slate-400 mt-0.5">${formatLocalTime(file.modified_timestamp, file.modified_formatted)}</p>
                     
                     ${employeeName ? `
                         <div class="mt-1">
@@ -783,6 +792,9 @@ async function openSettingsModal() {
 
         document.getElementById('setting_timestamp').checked = recip.add_timestamp !== false;
         document.getElementById('setting_archive').checked = config.auto_archive_pending !== false;
+        if (document.getElementById('setting_timezone')) {
+            document.getElementById('setting_timezone').value = config.timezone || 'Europe/Prague';
+        }
 
         const modal = document.getElementById('settingsModal');
         modal.classList.remove('hidden');
@@ -803,6 +815,7 @@ async function saveSettings(e) {
     const pubUrl = document.getElementById('setting_public_url').value.trim();
     const pendingDir = document.getElementById('setting_pending_dir').value.trim();
     const signedDir = document.getElementById('setting_signed_dir').value.trim();
+    const timezone = document.getElementById('setting_timezone') ? document.getElementById('setting_timezone').value : 'Europe/Prague';
 
     const ghRepo = (document.getElementById('setting_github_repo') ? document.getElementById('setting_github_repo').value.trim() : '');
     const ghToken = (document.getElementById('setting_github_token') ? document.getElementById('setting_github_token').value.trim() : '');
@@ -812,6 +825,7 @@ async function saveSettings(e) {
 
     const payload = {
         public_url: pubUrl,
+        timezone: timezone,
         pending_dir: pendingDir || 'pending',
         signed_dir: signedDir || 'signed',
         github_repo: ghRepo,
