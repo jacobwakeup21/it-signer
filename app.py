@@ -1,11 +1,9 @@
 import os
-import sys
 import io
 import re
 import json
 import base64
 import socket
-import logging
 import zipfile
 import urllib.request
 import urllib.error
@@ -16,10 +14,9 @@ try:
 except ImportError:
     zoneinfo = None
 from pathlib import Path
-from flask import Flask, render_template, request, jsonify, send_file, send_from_directory, redirect, url_for
+from flask import Flask, render_template, request, jsonify, send_file, send_from_directory
 import pymupdf
 import qrcode
-from PIL import Image
 
 # Initialize Flask app
 app = Flask(__name__, static_folder='static', template_folder='templates')
