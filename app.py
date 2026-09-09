@@ -178,6 +178,16 @@ def login_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
+@app.context_processor
+def inject_user_context():
+    """Make current_user, logged_in_user, and is_logged_in available in all Jinja templates."""
+    user = getattr(g, 'user', None) or get_current_user()
+    return {
+        'current_user': user,
+        'logged_in_user': user,
+        'is_logged_in': bool(user)
+    }
+
 def get_user_config(user=None):
     """
     Get effective configuration for a given user or current authenticated user.
@@ -643,7 +653,7 @@ def login_page():
         return redirect(next_url)
 
     error = None
-    message = None
+    message = request.args.get('message') or None
     active_tab = 'login'
     total_users = db.count_users()
 
@@ -721,7 +731,12 @@ def register_page():
 def logout_page():
     """Log out current user and clear session."""
     session.clear()
-    return redirect(url_for('login_page'))
+    if hasattr(g, 'user'):
+        g.user = None
+    resp = redirect(url_for('login_page', message='You have been successfully logged out.'))
+    cookie_name = app.config.get('SESSION_COOKIE_NAME', 'it_signer_session')
+    resp.delete_cookie(cookie_name)
+    return resp
 
 
 # ----------------- ROUTES: WEB PAGES -----------------
