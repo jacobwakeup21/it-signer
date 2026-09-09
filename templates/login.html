@@ -1,0 +1,188 @@
+{% extends "base.html" %}
+
+{% block title %}Sign In — IT Signer{% endblock %}
+
+{% block content %}
+<div class="min-h-[75vh] flex items-center justify-center py-6 px-4">
+    <div class="w-full max-w-md">
+        <!-- Brand Header with Glowing Backdrop -->
+        <div class="text-center mb-6 relative">
+            <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-[#0b1329] border border-cyan-500/40 shadow-[0_0_35px_rgba(6,182,212,0.3)] ring-1 ring-cyan-400/20 mb-3">
+                <i data-lucide="shield-check" class="w-9 h-9 text-cyan-400 drop-shadow-[0_0_12px_rgba(6,182,212,0.6)]"></i>
+            </div>
+            <h1 class="text-2xl sm:text-3xl font-black text-white tracking-tight">
+                IT Signer <span class="bg-gradient-to-r from-cyan-300 via-sky-300 to-indigo-300 bg-clip-text text-transparent">Portal</span>
+            </h1>
+            <p class="text-xs sm:text-sm text-slate-400 mt-1">
+                Personalized Digital Signature Hub & Folder Sync
+            </p>
+        </div>
+
+        <!-- Main Card -->
+        <div class="bg-gradient-to-b from-[#0b1329] via-[#0d1b3a]/90 to-[#070c18] border border-cyan-500/30 rounded-3xl p-6 sm:p-8 shadow-2xl shadow-cyan-950/60 relative overflow-hidden backdrop-blur-xl">
+            <div class="absolute -top-24 -right-24 w-48 h-48 bg-cyan-500/10 rounded-full blur-2xl pointer-events-none"></div>
+            <div class="absolute -bottom-24 -left-24 w-48 h-48 bg-indigo-600/10 rounded-full blur-2xl pointer-events-none"></div>
+
+            <!-- Error / Notification Alert -->
+            {% if error %}
+            <div class="mb-5 p-3.5 rounded-xl bg-rose-500/15 border border-rose-500/40 text-rose-300 text-xs flex items-center gap-2.5">
+                <i data-lucide="alert-circle" class="w-4 h-4 text-rose-400 flex-shrink-0"></i>
+                <span>{{ error }}</span>
+            </div>
+            {% endif %}
+
+            {% if message %}
+            <div class="mb-5 p-3.5 rounded-xl bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-xs flex items-center gap-2.5">
+                <i data-lucide="check-circle-2" class="w-4 h-4 text-emerald-400 flex-shrink-0"></i>
+                <span>{{ message }}</span>
+            </div>
+            {% endif %}
+
+            <!-- First-time user welcome alert if 0 users -->
+            {% if total_users == 0 %}
+            <div class="mb-5 p-3.5 rounded-xl bg-cyan-500/15 border border-cyan-400/40 text-cyan-200 text-xs flex items-center gap-2.5">
+                <i data-lucide="sparkles" class="w-4 h-4 text-cyan-400 flex-shrink-0"></i>
+                <span>Welcome! Please create the first user account below to start using IT Signer.</span>
+            </div>
+            {% endif %}
+
+            <!-- Tabs: Sign In / Create Account -->
+            <div class="flex bg-[#070c18] p-1 rounded-2xl border border-cyan-500/25 mb-6">
+                <button type="button" id="tabLoginBtn" onclick="switchAuthTab('login')" class="flex-1 py-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 {% if active_tab != 'register' %}bg-gradient-to-r from-cyan-600 via-sky-600 to-blue-600 text-white shadow-lg shadow-cyan-600/30{% else %}text-slate-400 hover:text-white{% endif %}">
+                    <i data-lucide="log-in" class="w-3.5 h-3.5"></i>
+                    Sign In
+                </button>
+                <button type="button" id="tabRegisterBtn" onclick="switchAuthTab('register')" class="flex-1 py-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 {% if active_tab == 'register' or total_users == 0 %}bg-gradient-to-r from-cyan-600 via-sky-600 to-blue-600 text-white shadow-lg shadow-cyan-600/30{% else %}text-slate-400 hover:text-white{% endif %}">
+                    <i data-lucide="user-plus" class="w-3.5 h-3.5"></i>
+                    Create Account
+                </button>
+            </div>
+
+            <!-- FORM: Sign In -->
+            <form id="formLogin" method="POST" action="/login" class="space-y-4 {% if active_tab == 'register' or total_users == 0 %}hidden{% endif %}">
+                <input type="hidden" name="action" value="login">
+                <input type="hidden" name="next" value="{{ next_url or '' }}">
+
+                <div>
+                    <label class="block text-xs font-semibold text-slate-300 mb-1.5">Username</label>
+                    <div class="relative">
+                        <i data-lucide="user" class="w-4 h-4 text-cyan-400 absolute left-3.5 top-1/2 -translate-y-1/2"></i>
+                        <input type="text" name="username" required autocomplete="username" autofocus
+                               placeholder="e.g. jacob or jkuchar" 
+                               value="{{ form_username or '' }}"
+                               class="w-full bg-[#070c18] border border-cyan-500/30 rounded-xl pl-10 pr-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:ring-2 focus:ring-cyan-400 focus:border-cyan-400 focus:outline-none transition shadow-inner">
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-xs font-semibold text-slate-300 mb-1.5">Password</label>
+                    <div class="relative">
+                        <i data-lucide="lock" class="w-4 h-4 text-cyan-400 absolute left-3.5 top-1/2 -translate-y-1/2"></i>
+                        <input type="password" name="password" required autocomplete="current-password"
+                               placeholder="Enter your password"
+                               class="w-full bg-[#070c18] border border-cyan-500/30 rounded-xl pl-10 pr-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:ring-2 focus:ring-cyan-400 focus:border-cyan-400 focus:outline-none transition shadow-inner">
+                    </div>
+                </div>
+
+                <div class="flex items-center justify-between pt-1">
+                    <label class="flex items-center gap-2 cursor-pointer text-xs text-slate-400 select-none">
+                        <input type="checkbox" name="remember" value="1" checked class="rounded bg-[#070c18] border-cyan-500/40 text-cyan-500 focus:ring-cyan-400">
+                        <span>Remember my login</span>
+                    </label>
+                </div>
+
+                <button type="submit" class="w-full py-3 bg-gradient-to-r from-cyan-500 via-sky-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-bold text-sm rounded-xl transition shadow-lg shadow-cyan-500/25 flex items-center justify-center gap-2 mt-2">
+                    <i data-lucide="arrow-right-circle" class="w-4 h-4"></i>
+                    Sign In to My IT Signer
+                </button>
+            </form>
+
+            <!-- FORM: Create Account -->
+            <form id="formRegister" method="POST" action="/register" class="space-y-4 {% if active_tab != 'register' and total_users > 0 %}hidden{% endif %}">
+                <input type="hidden" name="action" value="register">
+                <input type="hidden" name="next" value="{{ next_url or '' }}">
+
+                <div>
+                    <label class="block text-xs font-semibold text-slate-300 mb-1.5">Full Name / Display Name</label>
+                    <div class="relative">
+                        <i data-lucide="badge-check" class="w-4 h-4 text-cyan-400 absolute left-3.5 top-1/2 -translate-y-1/2"></i>
+                        <input type="text" name="display_name" required
+                               placeholder="e.g. Jacob Kuchar" 
+                               value="{{ form_display_name or '' }}"
+                               class="w-full bg-[#070c18] border border-cyan-500/30 rounded-xl pl-10 pr-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:ring-2 focus:ring-cyan-400 focus:border-cyan-400 focus:outline-none transition shadow-inner">
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-xs font-semibold text-slate-300 mb-1.5">Username (Login ID)</label>
+                    <div class="relative">
+                        <i data-lucide="user" class="w-4 h-4 text-cyan-400 absolute left-3.5 top-1/2 -translate-y-1/2"></i>
+                        <input type="text" name="username" required autocomplete="username"
+                               placeholder="e.g. jacob or jkuchar" 
+                               value="{{ form_username or '' }}"
+                               class="w-full bg-[#070c18] border border-cyan-500/30 rounded-xl pl-10 pr-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:ring-2 focus:ring-cyan-400 focus:border-cyan-400 focus:outline-none transition shadow-inner">
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-xs font-semibold text-slate-300 mb-1.5">Password</label>
+                    <div class="relative">
+                        <i data-lucide="lock" class="w-4 h-4 text-cyan-400 absolute left-3.5 top-1/2 -translate-y-1/2"></i>
+                        <input type="password" name="password" required autocomplete="new-password" minlength="4"
+                               placeholder="Minimum 4 characters"
+                               class="w-full bg-[#070c18] border border-cyan-500/30 rounded-xl pl-10 pr-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:ring-2 focus:ring-cyan-400 focus:border-cyan-400 focus:outline-none transition shadow-inner">
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-xs font-semibold text-slate-300 mb-1.5">Confirm Password</label>
+                    <div class="relative">
+                        <i data-lucide="shield-check" class="w-4 h-4 text-cyan-400 absolute left-3.5 top-1/2 -translate-y-1/2"></i>
+                        <input type="password" name="confirm_password" required autocomplete="new-password" minlength="4"
+                               placeholder="Re-type password"
+                               class="w-full bg-[#070c18] border border-cyan-500/30 rounded-xl pl-10 pr-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:ring-2 focus:ring-cyan-400 focus:border-cyan-400 focus:outline-none transition shadow-inner">
+                    </div>
+                </div>
+
+                <!-- Info Box -->
+                <div class="bg-[#070c18]/90 border border-cyan-500/20 rounded-xl p-3 text-[11px] text-slate-400 space-y-1">
+                    <div class="text-cyan-300 font-semibold flex items-center gap-1">
+                        <i data-lucide="folder-check" class="w-3.5 h-3.5 text-cyan-400"></i>
+                        Personal Workspace Isolation
+                    </div>
+                    <p>Your account gets its own isolated Pending & Signed document folders and custom settings. You can easily point it to your personal OneDrive folder.</p>
+                </div>
+
+                <button type="submit" class="w-full py-3 bg-gradient-to-r from-emerald-500 via-teal-500 to-cyan-600 hover:from-emerald-400 hover:to-cyan-500 text-white font-bold text-sm rounded-xl transition shadow-lg shadow-emerald-500/25 flex items-center justify-center gap-2 mt-2">
+                    <i data-lucide="check" class="w-4 h-4"></i>
+                    Create Account & Continue
+                </button>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function switchAuthTab(tab) {
+    const formLogin = document.getElementById('formLogin');
+    const formRegister = document.getElementById('formRegister');
+    const tabLoginBtn = document.getElementById('tabLoginBtn');
+    const tabRegisterBtn = document.getElementById('tabRegisterBtn');
+
+    if (tab === 'login') {
+        formLogin.classList.remove('hidden');
+        formRegister.classList.add('hidden');
+        tabLoginBtn.className = 'flex-1 py-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 bg-gradient-to-r from-cyan-600 via-sky-600 to-blue-600 text-white shadow-lg shadow-cyan-600/30';
+        tabRegisterBtn.className = 'flex-1 py-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 text-slate-400 hover:text-white';
+    } else {
+        formLogin.classList.add('hidden');
+        formRegister.classList.remove('hidden');
+        tabRegisterBtn.className = 'flex-1 py-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 bg-gradient-to-r from-cyan-600 via-sky-600 to-blue-600 text-white shadow-lg shadow-cyan-600/30';
+        tabLoginBtn.className = 'flex-1 py-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 text-slate-400 hover:text-white';
+    }
+    if (window.lucide) lucide.createIcons();
+}
+</script>
+{% endblock %}
