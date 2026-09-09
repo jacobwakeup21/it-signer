@@ -8,15 +8,19 @@ import zipfile
 import urllib.request
 import urllib.error
 import urllib.parse
+import secrets
+from functools import wraps
 from datetime import datetime, timezone, timedelta
 try:
     import zoneinfo
 except ImportError:
     zoneinfo = None
 from pathlib import Path
-from flask import Flask, render_template, request, jsonify, send_file, send_from_directory
+from flask import Flask, render_template, request, jsonify, send_file, send_from_directory, session, redirect, url_for, g
 import pymupdf
 import qrcode
+
+import db
 
 # Initialize Flask app
 app = Flask(__name__, static_folder='static', template_folder='templates')
@@ -24,6 +28,30 @@ app.config['MAX_CONTENT_LENGTH'] = 64 * 1024 * 1024  # 64MB max upload
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = BASE_DIR / 'config.json'
+
+# Persistent Secret Key for session cookies
+SECRET_KEY_FILE = BASE_DIR / '.secret_key'
+if not SECRET_KEY_FILE.exists():
+    try:
+        SECRET_KEY_FILE.write_text(secrets.token_hex(32), encoding='utf-8')
+    except Exception:
+        pass
+
+if SECRET_KEY_FILE.exists():
+    try:
+        app.secret_key = os.environ.get('SECRET_KEY') or SECRET_KEY_FILE.read_text(encoding='utf-8').strip()
+    except Exception:
+        app.secret_key = os.environ.get('SECRET_KEY') or secrets.token_hex(32)
+else:
+    app.secret_key = os.environ.get('SECRET_KEY') or secrets.token_hex(32)
+
+app.config['SESSION_COOKIE_NAME'] = 'it_signer_session'
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=30)
+
+# Initialize database
+db.init_db()
 
 DEFAULT_CONFIG = {
     "host": "0.0.0.0",
@@ -64,16 +92,15 @@ DEFAULT_CONFIG = {
     "auto_upload_github_signed": True
 }
 
-def load_config():
-    """Load configuration from JSON file or create with defaults."""
+def load_system_config():
+    """Load system configuration from config.json or defaults."""
     if not CONFIG_FILE.exists():
-        save_config(DEFAULT_CONFIG)
+        save_system_config(DEFAULT_CONFIG)
         return DEFAULT_CONFIG.copy()
     try:
         with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
             merged = DEFAULT_CONFIG.copy()
-            # Normalize legacy single placement to recipient
             if "signature_placement" in data:
                 pl = data["signature_placement"]
                 if "x" in pl and "recipient" not in pl:
@@ -87,8 +114,8 @@ def load_config():
         print(f"Error loading config.json: {e}, using defaults.")
         return DEFAULT_CONFIG.copy()
 
-def save_config(config_data):
-    """Save configuration to JSON file."""
+def save_system_config(config_data):
+    """Save system configuration to config.json."""
     try:
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump(config_data, f, indent=4)
@@ -96,6 +123,106 @@ def save_config(config_data):
     except Exception as e:
         print(f"Error saving config.json: {e}")
         return False
+
+# Backward compatibility alias
+load_config = load_system_config
+save_config = save_system_config
+
+def get_current_user():
+    """
+    Retrieve current authenticated user from:
+    1. Active Flask session
+    2. Authorization header (Bearer <token>)
+    3. Query parameter ?token=<token>
+    """
+    # 1. Query parameter: ?token=... (takes precedence so scanning a personal QR code switches session)
+    token = request.args.get('token', '').strip()
+    if token:
+        u = db.get_user_by_token(token)
+        if u:
+            # When loaded in a browser (e.g. mobile scanning desktop QR code), establish/switch session
+            session.permanent = True
+            session['user_id'] = u['id']
+            session['username'] = u['username']
+            session['display_name'] = u['display_name']
+            return u
+
+    # 2. Authorization header: Bearer <token>
+    auth_hdr = request.headers.get('Authorization', '')
+    if auth_hdr.startswith('Bearer '):
+        token = auth_hdr.split(' ', 1)[1].strip()
+        u = db.get_user_by_token(token)
+        if u:
+            return u
+
+    # 3. Active Flask session
+    user_id = session.get('user_id')
+    if user_id:
+        u = db.get_user_by_id(user_id)
+        if u:
+            return u
+        session.clear()
+
+    return None
+
+def login_required(f):
+    """Decorator to require login for web pages and API endpoints."""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        user = get_current_user()
+        if not user:
+            if request.path.startswith('/api/'):
+                return jsonify({"success": False, "error": "Authentication required. Please log in."}), 401
+            return redirect(url_for('login_page', next=request.full_path if request.query_string else request.path))
+        g.user = user
+        return f(*args, **kwargs)
+    return decorated_function
+
+def get_user_config(user=None):
+    """
+    Get effective configuration for a given user or current authenticated user.
+    Each user has their own pending_dir, signed_dir, archive_dir, signature placement,
+    and cloud sync settings.
+    """
+    sys_cfg = load_system_config()
+    if not user:
+        if hasattr(g, 'user') and g.user:
+            user = g.user
+        else:
+            return sys_cfg
+
+    user_settings = user.get('settings', {}) if isinstance(user, dict) else {}
+    username = user.get('username', 'default')
+
+    merged = sys_cfg.copy()
+
+    # User-specific directories (defaults to pending/<username> and signed/<username>)
+    user_pending = user_settings.get('pending_dir') or f"pending/{username}"
+    user_signed = user_settings.get('signed_dir') or f"signed/{username}"
+    user_archive = user_settings.get('archive_dir') or f"{user_pending}/.archive"
+
+    merged['pending_dir'] = user_pending
+    merged['signed_dir'] = user_signed
+    merged['archive_dir'] = user_archive
+
+    # User-specific signature placement
+    if 'signature_placement' in user_settings:
+        merged['signature_placement'] = user_settings['signature_placement']
+
+    # User-specific preferences
+    for key in ['dual_signature', 'auto_archive_pending', 'timezone',
+                'github_repo', 'github_token', 'github_branch',
+                'auto_delete_github_pending', 'auto_upload_github_signed',
+                'public_url']:
+        if key in user_settings and user_settings[key] is not None and user_settings[key] != '':
+            merged[key] = user_settings[key]
+
+    # Ensure the user's directories exist on disk
+    get_resolved_path(merged['pending_dir'])
+    get_resolved_path(merged['signed_dir'])
+    get_resolved_path(merged['archive_dir'])
+
+    return merged
 
 def get_resolved_path(folder_path_str):
     """Resolve relative or absolute folder paths (supports OneDrive & env vars)."""
@@ -144,16 +271,7 @@ def format_file_size(size_bytes):
         return f"{size_bytes / (1024 * 1024):.2f} MB"
 
 def get_signature_timestamp(data=None, config=None):
-    """
-    Get the localized timestamp string for signing documents.
-    Prevents timestamps being offset (e.g. 2 hours off on UTC cloud servers like Render/Docker).
-    Priority:
-    1. Direct client timestamp sent from device (phone or PC): 'YYYY-MM-DD HH:MM:SS'
-    2. Client timezone offset (minutes) sent from browser/device
-    3. Client timezone name (e.g. 'Europe/Prague', 'Europe/Bratislava', 'Europe/Helsinki')
-    4. Configured server timezone (config.json 'timezone' or env vars TZ / APP_TIMEZONE)
-    5. Server local time (fallback)
-    """
+    """Get localized timestamp string for signing documents."""
     data = data or {}
     config = config or {}
 
@@ -171,8 +289,6 @@ def get_signature_timestamp(data=None, config=None):
     if tz_offset is not None:
         try:
             offset_mins = int(tz_offset)
-            # In JS: getTimezoneOffset() returns minutes where UTC = local + offset.
-            # Therefore local = UTC - offset. (e.g. UTC+2 gives -120 -> UTC - (-120) = UTC + 120min)
             local_dt = datetime.now(timezone.utc) - timedelta(minutes=offset_mins)
             return local_dt.strftime('%Y-%m-%d %H:%M:%S')
         except Exception as e:
@@ -187,7 +303,7 @@ def get_signature_timestamp(data=None, config=None):
         except Exception:
             pass
 
-    # 4. Configured server timezone (config.json 'timezone' or env vars TZ / APP_TIMEZONE)
+    # 4. Configured server timezone
     cfg_tz_name = config.get('timezone') or os.environ.get('APP_TIMEZONE') or os.environ.get('TZ')
     if cfg_tz_name and cfg_tz_name.lower() != 'auto' and zoneinfo is not None:
         try:
@@ -211,9 +327,9 @@ def format_timestamp_localized(epoch_sec, config=None, fmt='%Y-%m-%d %H:%M:%S'):
             pass
     return datetime.fromtimestamp(epoch_sec).strftime(fmt)
 
-def get_github_config():
-    """Retrieve normalized GitHub settings from config or environment variables."""
-    cfg = load_config()
+def get_github_config(user=None):
+    """Retrieve normalized GitHub settings for the given or current user."""
+    cfg = get_user_config(user)
     raw_repo = os.environ.get('GITHUB_REPO') or cfg.get('github_repo', '')
     token = os.environ.get('GITHUB_TOKEN') or cfg.get('github_token', '')
     branch = os.environ.get('GITHUB_BRANCH') or cfg.get('github_branch', 'main')
@@ -234,9 +350,9 @@ def get_github_config():
         "is_configured": bool(repo and token)
     }
 
-def github_api_request(method, endpoint, data=None, token=None):
+def github_api_request(method, endpoint, data=None, token=None, user=None):
     """Execute a GitHub REST API v3 request."""
-    gh_cfg = get_github_config()
+    gh_cfg = get_github_config(user)
     auth_token = token or gh_cfg['token']
     if not auth_token:
         raise ValueError("GitHub Personal Access Token is not configured.")
@@ -245,7 +361,7 @@ def github_api_request(method, endpoint, data=None, token=None):
     headers = {
         "Authorization": f"Bearer {auth_token}",
         "Accept": "application/vnd.github+json",
-        "User-Agent": "IT-Handover-Signer/1.0",
+        "User-Agent": "IT-Signer/2.0",
         "X-GitHub-Api-Version": "2022-11-28"
     }
 
@@ -276,9 +392,9 @@ def github_api_request(method, endpoint, data=None, token=None):
     except Exception as e:
         raise RuntimeError(f"Network error connecting to GitHub: {str(e)}")
 
-def github_test_connection(repo=None, token=None):
+def github_test_connection(repo=None, token=None, user=None):
     """Test connection to GitHub repository."""
-    gh = get_github_config()
+    gh = get_github_config(user)
     target_repo = repo or gh['repo']
     target_token = token or gh['token']
     if not target_repo or not target_token:
@@ -290,7 +406,7 @@ def github_test_connection(repo=None, token=None):
     clean_repo = re.sub(r'\.git$', '', clean_repo).strip('/')
 
     try:
-        data = github_api_request("GET", f"repos/{clean_repo}", token=target_token)
+        data = github_api_request("GET", f"repos/{clean_repo}", token=target_token, user=user)
         perms = data.get("permissions") or {}
         can_push = perms.get("push", False) if perms else None
         warning = None
@@ -319,16 +435,16 @@ def quote_github_path(path_str):
     parts = clean.split('/')
     return '/'.join(urllib.parse.quote(p, safe='') for p in parts)
 
-def github_list_folder_files(folder='pending'):
-    """List all files in GitHub repo's specified directory (pending or signed)."""
-    gh = get_github_config()
+def github_list_folder_files(folder='pending', user=None):
+    """List all files in GitHub repo's specified directory."""
+    gh = get_github_config(user)
     if not gh['is_configured']:
         return []
     try:
         clean_folder = folder.strip().strip('/')
         query = urllib.parse.urlencode({'ref': gh['branch']})
         endpoint = f"repos/{gh['repo']}/contents/{clean_folder}?{query}"
-        items = github_api_request("GET", endpoint)
+        items = github_api_request("GET", endpoint, user=user)
         if isinstance(items, list):
             files = []
             for item in items:
@@ -350,17 +466,15 @@ def github_list_folder_files(folder='pending'):
         print(f"Error listing GitHub {folder} files: {e}")
         return []
 
-def github_list_pending_files():
-    """List all files in GitHub repo's pending directory."""
-    return github_list_folder_files('pending')
+def github_list_pending_files(user=None):
+    return github_list_folder_files('pending', user=user)
 
-def github_list_signed_files():
-    """List all files in GitHub repo's signed directory."""
-    return github_list_folder_files('signed')
+def github_list_signed_files(user=None):
+    return github_list_folder_files('signed', user=user)
 
-def github_delete_file(path_in_repo, sha=None, commit_msg=None):
-    """Delete a file from GitHub repository with safe URL encoding."""
-    gh = get_github_config()
+def github_delete_file(path_in_repo, sha=None, commit_msg=None, user=None):
+    """Delete a file from GitHub repository."""
+    gh = get_github_config(user)
     if not gh['is_configured']:
         raise ValueError("GitHub integration is not configured.")
 
@@ -370,23 +484,23 @@ def github_delete_file(path_in_repo, sha=None, commit_msg=None):
     if not sha:
         query = urllib.parse.urlencode({'ref': gh['branch']})
         endpoint = f"repos/{gh['repo']}/contents/{encoded_path}?{query}"
-        item = github_api_request("GET", endpoint)
+        item = github_api_request("GET", endpoint, user=user)
         sha = item.get('sha')
         if not sha:
             raise RuntimeError(f"Could not retrieve SHA for {clean_path}")
 
     filename = Path(clean_path).name
-    msg = commit_msg or f"Delete {filename} from pending folder via IT Handover Signer"
+    msg = commit_msg or f"Delete {filename} via IT Signer"
     payload = {
         "message": msg,
         "sha": sha,
         "branch": gh['branch']
     }
-    return github_api_request("DELETE", f"repos/{gh['repo']}/contents/{encoded_path}", data=payload)
+    return github_api_request("DELETE", f"repos/{gh['repo']}/contents/{encoded_path}", data=payload, user=user)
 
-def github_upload_file(path_in_repo, file_bytes, commit_msg=None):
-    """Upload or update a file in GitHub repository with safe URL encoding."""
-    gh = get_github_config()
+def github_upload_file(path_in_repo, file_bytes, commit_msg=None, user=None):
+    """Upload or update a file in GitHub repository."""
+    gh = get_github_config(user)
     if not gh['is_configured']:
         raise ValueError("GitHub integration is not configured.")
 
@@ -396,23 +510,23 @@ def github_upload_file(path_in_repo, file_bytes, commit_msg=None):
     b64_content = base64.b64encode(file_bytes).decode('ascii')
 
     payload = {
-        "message": commit_msg or f"Add signed document {filename} via IT Handover Signer",
+        "message": commit_msg or f"Add signed document {filename} via IT Signer",
         "content": b64_content,
         "branch": gh['branch']
     }
 
     try:
         query = urllib.parse.urlencode({'ref': gh['branch']})
-        existing = github_api_request("GET", f"repos/{gh['repo']}/contents/{encoded_path}?{query}")
+        existing = github_api_request("GET", f"repos/{gh['repo']}/contents/{encoded_path}?{query}", user=user)
         if isinstance(existing, dict) and "sha" in existing:
             payload["sha"] = existing["sha"]
     except Exception:
         pass
 
-    return github_api_request("PUT", f"repos/{gh['repo']}/contents/{encoded_path}", data=payload)
+    return github_api_request("PUT", f"repos/{gh['repo']}/contents/{encoded_path}", data=payload, user=user)
 
 def get_pdf_metadata(filepath):
-    """Extract page count and basic metadata from PDF using PyMuPDF."""
+    """Extract page count from PDF using PyMuPDF."""
     try:
         doc = pymupdf.open(str(filepath))
         page_count = len(doc)
@@ -515,12 +629,108 @@ def extract_pdf_metadata(doc_or_path):
 
     return meta
 
+
+# ----------------- AUTHENTICATION ROUTES -----------------
+
+@app.route('/login', methods=['GET', 'POST'])
+def login_page():
+    """User login and registration page."""
+    next_url = request.args.get('next') or request.form.get('next') or '/'
+    
+    # If user is already authenticated, redirect
+    current_u = get_current_user()
+    if current_u:
+        return redirect(next_url)
+
+    error = None
+    message = None
+    active_tab = 'login'
+    total_users = db.count_users()
+
+    if request.method == 'POST':
+        action = request.form.get('action', 'login')
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '').strip()
+        remember = bool(request.form.get('remember'))
+
+        if action == 'register':
+            active_tab = 'register'
+            display_name = request.form.get('display_name', '').strip()
+            confirm_pw = request.form.get('confirm_password', '').strip()
+
+            if password != confirm_pw:
+                error = "Passwords do not match."
+            else:
+                try:
+                    valid, clean_username = db.validate_username(username)
+                    if not valid:
+                        error = clean_username
+                    else:
+                        initial_settings = {
+                            "pending_dir": f"pending/{clean_username}",
+                            "signed_dir": f"signed/{clean_username}",
+                            "archive_dir": f"pending/{clean_username}/.archive"
+                        }
+                        user = db.create_user(clean_username, password, display_name=display_name, initial_settings=initial_settings)
+                        session.permanent = True
+                        session['user_id'] = user['id']
+                        session['username'] = user['username']
+                        session['display_name'] = user['display_name']
+
+                        # Pre-create user folders
+                        get_resolved_path(f"pending/{clean_username}")
+                        get_resolved_path(f"signed/{clean_username}")
+                        get_resolved_path(f"pending/{clean_username}/.archive")
+
+                        return redirect(next_url)
+                except Exception as e:
+                    error = str(e)
+        else: # login
+            user = db.authenticate_user(username, password)
+            if user:
+                if remember:
+                    session.permanent = True
+                session['user_id'] = user['id']
+                session['username'] = user['username']
+                session['display_name'] = user['display_name']
+
+                # Ensure user folders exist
+                cfg = get_user_config(user)
+                get_resolved_path(cfg['pending_dir'])
+                get_resolved_path(cfg['signed_dir'])
+
+                return redirect(next_url)
+            else:
+                error = "Invalid username or password. Please check your credentials."
+
+    return render_template('login.html',
+                           error=error,
+                           message=message,
+                           active_tab=active_tab,
+                           total_users=total_users,
+                           next_url=next_url,
+                           form_username=request.form.get('username', ''),
+                           form_display_name=request.form.get('display_name', ''))
+
+@app.route('/register', methods=['POST'])
+def register_page():
+    """Register form submission handler."""
+    return login_page()
+
+@app.route('/logout')
+def logout_page():
+    """Log out current user and clear session."""
+    session.clear()
+    return redirect(url_for('login_page'))
+
+
 # ----------------- ROUTES: WEB PAGES -----------------
 
 @app.route('/')
+@login_required
 def desktop_dashboard():
     """Desktop interface: QR code, pending & signed files, calibrator, settings."""
-    config = load_config()
+    config = get_user_config(g.user)
     ips = get_local_ips()
     primary_ip = ips[0]
     port = int(os.environ.get('PORT', config.get('port', 5000)))
@@ -536,31 +746,43 @@ def desktop_dashboard():
     else:
         base_mobile_url = f"http://{primary_ip}:{port}/mobile"
 
+    # Embed quick access token so mobile device automatically authenticates as this user!
+    user_token = g.user.get('quick_access_token', '')
+    if user_token:
+        delimiter = '&' if '?' in base_mobile_url else '?'
+        mobile_url_with_token = f"{base_mobile_url}{delimiter}token={user_token}"
+    else:
+        mobile_url_with_token = base_mobile_url
+
     return render_template('desktop.html', 
                            config=config, 
                            ips=ips, 
                            primary_ip=primary_ip, 
                            port=port,
                            public_url=public_url,
-                           mobile_url=base_mobile_url)
+                           mobile_url=mobile_url_with_token,
+                           user=g.user,
+                           user_token=user_token)
 
 @app.route('/mobile')
+@login_required
 def mobile_list():
-    """Mobile document list page."""
-    config = load_config()
-    return render_template('mobile_list.html', config=config)
+    """Mobile document list page for authenticated user."""
+    config = get_user_config(g.user)
+    return render_template('mobile_list.html', config=config, user=g.user)
 
 @app.route('/sign/<path:filename>')
+@login_required
 def mobile_sign(filename):
-    """Mobile signing interface for a specific PDF."""
-    config = load_config()
-    pending_dir = get_resolved_path(config.get('pending_dir', 'pending'))
+    """Mobile signing interface for a specific PDF in user's pending folder."""
+    config = get_user_config(g.user)
+    pending_dir = get_resolved_path(config.get('pending_dir'))
     file_path = pending_dir / filename
     
     if not file_path.exists():
         return render_template('error.html', 
                                title="Document Not Found", 
-                               message=f"The requested document '{filename}' is no longer in the pending folder. It may have already been signed."), 404
+                               message=f"The requested document '{filename}' is no longer in your pending folder. It may have already been signed."), 404
         
     page_count = get_pdf_metadata(file_path)
     file_size = format_file_size(file_path.stat().st_size)
@@ -573,21 +795,25 @@ def mobile_sign(filename):
                            file_size=file_size,
                            mod_time=mod_time,
                            metadata=metadata,
-                           config=config)
+                           config=config,
+                           user=g.user)
 
 @app.route('/signed-success/<path:filename>')
+@login_required
 def signed_success(filename):
     """Success confirmation page for mobile user."""
-    return render_template('signed_success.html', filename=filename)
+    return render_template('signed_success.html', filename=filename, user=g.user)
+
 
 # ----------------- ROUTES: API ENDPOINTS -----------------
 
 @app.route('/api/documents')
+@login_required
 def api_documents():
-    """Return lists of pending and signed PDF files with extracted metadata."""
-    config = load_config()
-    pending_dir = get_resolved_path(config.get('pending_dir', 'pending'))
-    signed_dir = get_resolved_path(config.get('signed_dir', 'signed'))
+    """Return lists of pending and signed PDF files for current user."""
+    config = get_user_config(g.user)
+    pending_dir = get_resolved_path(config.get('pending_dir'))
+    signed_dir = get_resolved_path(config.get('signed_dir'))
     
     def scan_dir(directory, is_pending=True):
         files_data = []
@@ -603,6 +829,9 @@ def api_documents():
                     metadata = extract_pdf_metadata(doc)
                     doc.close()
 
+                    token = g.user.get('quick_access_token', '')
+                    token_query = f"?token={token}" if token else ""
+
                     files_data.append({
                         "name": entry.name,
                         "size_bytes": stat.st_size,
@@ -611,10 +840,10 @@ def api_documents():
                         "modified_formatted": format_timestamp_localized(stat.st_mtime, config, '%Y-%m-%d %H:%M:%S'),
                         "page_count": page_count,
                         "metadata": metadata,
-                        "preview_url": f"/api/preview/{'pending' if is_pending else 'signed'}/{entry.name}/1",
-                        "last_page_preview_url": f"/api/preview/{'pending' if is_pending else 'signed'}/{entry.name}/{page_count}",
-                        "download_url": f"/download/{'pending' if is_pending else 'signed'}/{entry.name}",
-                        "sign_url": f"/sign/{entry.name}" if is_pending else None
+                        "preview_url": f"/api/preview/{'pending' if is_pending else 'signed'}/{entry.name}/1{token_query}",
+                        "last_page_preview_url": f"/api/preview/{'pending' if is_pending else 'signed'}/{entry.name}/{page_count}{token_query}",
+                        "download_url": f"/download/{'pending' if is_pending else 'signed'}/{entry.name}{token_query}",
+                        "sign_url": f"/sign/{entry.name}{token_query}" if is_pending else None
                     })
                 except Exception as e:
                     print(f"Error reading file {entry.name}: {e}")
@@ -624,14 +853,19 @@ def api_documents():
 
     return jsonify({
         "pending": scan_dir(pending_dir, is_pending=True),
-        "signed": scan_dir(signed_dir, is_pending=False)
+        "signed": scan_dir(signed_dir, is_pending=False),
+        "user": {
+            "username": g.user['username'],
+            "display_name": g.user['display_name']
+        }
     })
 
 @app.route('/api/metadata/<folder_type>/<path:filename>')
+@login_required
 def api_get_metadata(folder_type, filename):
-    """Return extracted metadata for a specific PDF."""
-    config = load_config()
-    target_dir = get_resolved_path(config.get('pending_dir' if folder_type == 'pending' else 'signed_dir', folder_type))
+    """Return extracted metadata for a specific PDF in user's folder."""
+    config = get_user_config(g.user)
+    target_dir = get_resolved_path(config.get('pending_dir' if folder_type == 'pending' else 'signed_dir'))
     file_path = target_dir / filename
     if not file_path.exists():
         return jsonify({"success": False, "error": "File not found"}), 404
@@ -639,6 +873,7 @@ def api_get_metadata(folder_type, filename):
 
 @app.route('/api/page-dimensions/<folder_type>/<path:filename>/<int(signed=True):page>')
 @app.route('/api/page-dimensions/<folder_type>/<path:filename>/<page>')
+@login_required
 def api_page_dimensions(folder_type, filename, page):
     """Return page width and height in PDF points for the visual calibrator."""
     try:
@@ -646,8 +881,8 @@ def api_page_dimensions(folder_type, filename, page):
     except ValueError:
         page_num = -1
 
-    config = load_config()
-    target_dir = get_resolved_path(config.get('pending_dir' if folder_type == 'pending' else 'signed_dir', folder_type))
+    config = get_user_config(g.user)
+    target_dir = get_resolved_path(config.get('pending_dir' if folder_type == 'pending' else 'signed_dir'))
     file_path = target_dir / filename
     if not file_path.exists():
         return jsonify({"success": False, "error": "File not found"}), 404
@@ -671,6 +906,7 @@ def api_page_dimensions(folder_type, filename, page):
 
 @app.route('/api/preview/<folder_type>/<path:filename>/<int(signed=True):page>')
 @app.route('/api/preview/<folder_type>/<path:filename>/<page>')
+@login_required
 def api_preview(folder_type, filename, page):
     """Render a specific PDF page as PNG thumbnail using PyMuPDF."""
     try:
@@ -678,11 +914,11 @@ def api_preview(folder_type, filename, page):
     except ValueError:
         page_num = -1
 
-    config = load_config()
+    config = get_user_config(g.user)
     if folder_type == 'pending':
-        target_dir = get_resolved_path(config.get('pending_dir', 'pending'))
+        target_dir = get_resolved_path(config.get('pending_dir'))
     elif folder_type == 'signed':
-        target_dir = get_resolved_path(config.get('signed_dir', 'signed'))
+        target_dir = get_resolved_path(config.get('signed_dir'))
     else:
         return "Invalid folder", 400
 
@@ -716,7 +952,8 @@ def api_qr():
     """Generate QR code PNG for a given URL or text."""
     url = request.args.get('url', '').strip()
     if not url:
-        config = load_config()
+        current_u = get_current_user()
+        config = get_user_config(current_u)
         path = request.args.get('path', '/mobile')
         public_url = os.environ.get('PUBLIC_URL') or config.get('public_url', '').strip()
         
@@ -731,6 +968,10 @@ def api_qr():
             ip = request.args.get('ip', get_local_ips()[0])
             port = int(os.environ.get('PORT', config.get('port', 5000)))
             url = f"http://{ip}:{port}{path}"
+
+        if current_u and 'token' not in url:
+            delimiter = '&' if '?' in url else '?'
+            url = f"{url}{delimiter}token={current_u.get('quick_access_token', '')}"
 
     qr = qrcode.QRCode(
         version=1,
@@ -748,10 +989,11 @@ def api_qr():
     return send_file(buf, mimetype='image/png')
 
 @app.route('/api/upload', methods=['POST'])
+@login_required
 def api_upload():
-    """Upload a new PDF into the pending directory."""
-    config = load_config()
-    pending_dir = get_resolved_path(config.get('pending_dir', 'pending'))
+    """Upload a new PDF into current user's pending directory."""
+    config = get_user_config(g.user)
+    pending_dir = get_resolved_path(config.get('pending_dir'))
 
     if 'file' not in request.files:
         return jsonify({"success": False, "error": "No file part in request"}), 400
@@ -773,26 +1015,29 @@ def api_upload():
         save_path = pending_dir / clean_name
 
     file.save(str(save_path))
+    token = g.user.get('quick_access_token', '')
+    token_q = f"?token={token}" if token else ""
     return jsonify({
         "success": True, 
         "filename": clean_name,
-        "sign_url": f"/sign/{clean_name}"
+        "sign_url": f"/sign/{clean_name}{token_q}"
     })
 
 @app.route('/api/sign/<path:filename>', methods=['POST'])
+@login_required
 def api_sign(filename):
     """
-    Overlay signature PNG onto PDF using PyMuPDF and save to signed folder.
+    Overlay signature PNG onto PDF using PyMuPDF and save to user's signed folder.
     Supports single or dual signature (role: 'recipient' | 'issuer' | 'both').
     """
-    config = load_config()
-    pending_dir = get_resolved_path(config.get('pending_dir', 'pending'))
-    signed_dir = get_resolved_path(config.get('signed_dir', 'signed'))
-    archive_dir = get_resolved_path(config.get('archive_dir', 'pending/.archive'))
+    config = get_user_config(g.user)
+    pending_dir = get_resolved_path(config.get('pending_dir'))
+    signed_dir = get_resolved_path(config.get('signed_dir'))
+    archive_dir = get_resolved_path(config.get('archive_dir'))
 
     source_path = pending_dir / filename
     if not source_path.exists():
-        return jsonify({"success": False, "error": f"Pending file '{filename}' not found."}), 404
+        return jsonify({"success": False, "error": f"Pending file '{filename}' not found in your workspace."}), 404
 
     data = request.get_json(silent=True) or {}
     role = data.get('role', 'recipient').lower()  # 'recipient', 'issuer', or 'both'
@@ -800,15 +1045,13 @@ def api_sign(filename):
     signature_issuer_url = data.get('signature_issuer', '')
     signature_recipient_url = data.get('signature_recipient', '')
     signer_name = data.get('signer_name', '').strip()
-    signer_notes = data.get('signer_notes', '').strip()
 
     if not signature_data_url and not signature_recipient_url and not signature_issuer_url:
         return jsonify({"success": False, "error": "No signature data received."}), 400
 
-    # Get placement definitions
+    # Get placement definitions for current user
     cfg_placement = config.get('signature_placement', DEFAULT_CONFIG['signature_placement'])
     
-    # Handle backward compatibility / normalization
     if "recipient" in cfg_placement:
         placement_recipient = cfg_placement["recipient"]
         placement_issuer = cfg_placement.get("issuer", DEFAULT_CONFIG["signature_placement"]["issuer"])
@@ -836,7 +1079,7 @@ def api_sign(filename):
         doc = pymupdf.open(str(source_path))
         num_pages = len(doc)
         
-        # Resolve localized signing timestamp (client device time or configured timezone)
+        # Resolve localized signing timestamp
         sig_timestamp = get_signature_timestamp(data, config)
 
         # Helper to apply one signature
@@ -896,7 +1139,7 @@ def api_sign(filename):
             signed_filename = f"{stem}_signed_{ts_file}.pdf"
             output_path = signed_dir / signed_filename
 
-        # Save signed document
+        # Save signed document into user's signed folder
         doc.save(str(output_path), garbage=4, deflate=True)
         doc.close()
 
@@ -917,31 +1160,33 @@ def api_sign(filename):
                 except Exception:
                     pass
 
-        # GitHub Automated Sync (if configured)
-        gh_cfg = get_github_config()
+        # GitHub Automated Sync (if configured for this user)
+        gh_cfg = get_github_config(g.user)
         gh_status = {"uploaded_signed": False, "deleted_pending": False}
         if gh_cfg['is_configured']:
             if gh_cfg['auto_upload_github_signed']:
                 try:
                     with open(output_path, 'rb') as sf:
                         signed_bytes = sf.read()
-                    github_upload_file(f"signed/{signed_filename}", signed_bytes, f"Add signed document: {signed_filename}")
+                    github_upload_file(f"signed/{signed_filename}", signed_bytes, f"Add signed document: {signed_filename}", user=g.user)
                     gh_status["uploaded_signed"] = True
                 except Exception as ge:
                     print(f"Notice: could not upload signed PDF to GitHub: {ge}")
 
             if gh_cfg['auto_delete_github_pending']:
                 try:
-                    github_delete_file(f"pending/{filename}", commit_msg=f"Delete pending signed document: {filename}")
+                    github_delete_file(f"pending/{filename}", commit_msg=f"Delete pending signed document: {filename}", user=g.user)
                     gh_status["deleted_pending"] = True
                 except Exception as ge:
                     print(f"Notice: could not delete pending PDF from GitHub: {ge}")
 
+        token = g.user.get('quick_access_token', '')
+        token_q = f"?token={token}" if token else ""
         return jsonify({
             "success": True,
             "filename": signed_filename,
-            "download_url": f"/download/signed/{signed_filename}",
-            "preview_url": f"/api/preview/signed/{signed_filename}/1",
+            "download_url": f"/download/signed/{signed_filename}{token_q}",
+            "preview_url": f"/api/preview/signed/{signed_filename}/1{token_q}",
             "github_sync": gh_status
         })
 
@@ -950,15 +1195,16 @@ def api_sign(filename):
         return jsonify({"success": False, "error": f"Failed to overlay signature: {str(e)}"}), 500
 
 @app.route('/download/<folder_type>/<path:filename>')
+@login_required
 def download_file(folder_type, filename):
-    """Download a pending or signed PDF."""
-    config = load_config()
+    """Download a pending, signed, or archived PDF from user's directory."""
+    config = get_user_config(g.user)
     if folder_type == 'pending':
-        target_dir = get_resolved_path(config.get('pending_dir', 'pending'))
+        target_dir = get_resolved_path(config.get('pending_dir'))
     elif folder_type == 'signed':
-        target_dir = get_resolved_path(config.get('signed_dir', 'signed'))
+        target_dir = get_resolved_path(config.get('signed_dir'))
     elif folder_type == 'archive':
-        target_dir = get_resolved_path(config.get('archive_dir', 'pending/.archive'))
+        target_dir = get_resolved_path(config.get('archive_dir'))
     else:
         return "Invalid folder", 400
 
@@ -966,15 +1212,16 @@ def download_file(folder_type, filename):
 
 @app.route('/api/documents/<folder_type>/<path:filename>', methods=['DELETE'])
 @app.route('/api/delete/<folder_type>/<path:filename>', methods=['POST', 'DELETE'])
+@login_required
 def api_delete_document(folder_type, filename):
-    """Delete a document from pending, signed, or archive folder, with optional GitHub deletion."""
-    config = load_config()
+    """Delete a document from user's pending, signed, or archive folder, with optional GitHub deletion."""
+    config = get_user_config(g.user)
     if folder_type == 'pending':
-        target_dir = get_resolved_path(config.get('pending_dir', 'pending'))
+        target_dir = get_resolved_path(config.get('pending_dir'))
     elif folder_type == 'signed':
-        target_dir = get_resolved_path(config.get('signed_dir', 'signed'))
+        target_dir = get_resolved_path(config.get('signed_dir'))
     elif folder_type == 'archive':
-        target_dir = get_resolved_path(config.get('archive_dir', 'pending/.archive'))
+        target_dir = get_resolved_path(config.get('archive_dir'))
     else:
         return jsonify({"success": False, "error": "Invalid folder type"}), 400
 
@@ -989,16 +1236,15 @@ def api_delete_document(folder_type, filename):
         except Exception as e:
             return jsonify({"success": False, "error": f"Failed to delete local file: {str(e)}"}), 500
 
-    # Also check if user requested GitHub deletion
     delete_github = request.args.get('delete_github', 'false').lower() == 'true'
     gh_deleted = False
     gh_error = None
 
     if delete_github and folder_type in ('pending', 'signed'):
-        gh_cfg = get_github_config()
+        gh_cfg = get_github_config(g.user)
         if gh_cfg['is_configured']:
             try:
-                github_delete_file(f"{folder_type}/{clean_name}")
+                github_delete_file(f"{folder_type}/{clean_name}", user=g.user)
                 gh_deleted = True
             except Exception as ge:
                 gh_error = str(ge)
@@ -1014,12 +1260,14 @@ def api_delete_document(folder_type, filename):
         "github_error": gh_error
     })
 
+
 # ----------------- GITHUB INTEGRATION ENDPOINTS -----------------
 
 @app.route('/api/github/status')
+@login_required
 def api_github_status():
-    """Get status of GitHub integration."""
-    gh = get_github_config()
+    """Get status of GitHub integration for current user."""
+    gh = get_github_config(g.user)
     return jsonify({
         "is_configured": gh["is_configured"],
         "repo": gh["repo"],
@@ -1030,47 +1278,51 @@ def api_github_status():
     })
 
 @app.route('/api/github/test', methods=['POST'])
+@login_required
 def api_github_test():
     """Test GitHub connection with repository and token."""
     data = request.get_json(silent=True) or {}
     repo = data.get('repo')
     token = data.get('token')
-    res = github_test_connection(repo, token)
+    res = github_test_connection(repo, token, user=g.user)
     return jsonify(res)
 
 @app.route('/api/github/pending')
+@login_required
 def api_github_pending():
-    """List all files in GitHub repo pending/ folder."""
-    gh = get_github_config()
+    """List all files in GitHub repo pending/ folder for current user."""
+    gh = get_github_config(g.user)
     if not gh['is_configured']:
         return jsonify({"success": False, "error": "GitHub is not configured with repository & token.", "files": []})
     try:
-        files = github_list_pending_files()
+        files = github_list_pending_files(user=g.user)
         return jsonify({"success": True, "files": files, "repo": gh['repo'], "branch": gh['branch']})
     except Exception as e:
         return jsonify({"success": False, "error": str(e), "files": []}), 500
 
 @app.route('/api/github/delete/pending/<path:filename>', methods=['POST', 'DELETE'])
+@login_required
 def api_github_delete_pending(filename):
     """Delete a specific file from GitHub pending/ folder."""
-    gh = get_github_config()
+    gh = get_github_config(g.user)
     if not gh['is_configured']:
         return jsonify({"success": False, "error": "GitHub is not configured."}), 400
     try:
         clean_name = Path(filename).name
-        github_delete_file(f"pending/{clean_name}")
+        github_delete_file(f"pending/{clean_name}", user=g.user)
         return jsonify({"success": True, "message": f"Deleted {clean_name} from GitHub pending folder."})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/github/clear-pending', methods=['POST'])
+@login_required
 def api_github_clear_pending():
     """Delete all files from GitHub pending/ folder in batch."""
-    gh = get_github_config()
+    gh = get_github_config(g.user)
     if not gh['is_configured']:
         return jsonify({"success": False, "error": "GitHub is not configured."}), 400
     try:
-        files = github_list_pending_files()
+        files = github_list_pending_files(user=g.user)
         if not files:
             return jsonify({"success": True, "deleted_count": 0, "message": "GitHub pending folder is already empty."})
 
@@ -1078,7 +1330,7 @@ def api_github_clear_pending():
         errors = []
         for f in files:
             try:
-                github_delete_file(f['path'], sha=f.get('sha'))
+                github_delete_file(f['path'], sha=f.get('sha'), user=g.user)
                 deleted += 1
             except Exception as ge:
                 errors.append(f"{f['name']}: {str(ge)}")
@@ -1093,38 +1345,41 @@ def api_github_clear_pending():
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/github/signed')
+@login_required
 def api_github_signed():
-    """List all files in GitHub repo signed/ folder."""
-    gh = get_github_config()
+    """List all files in GitHub repo signed/ folder for current user."""
+    gh = get_github_config(g.user)
     if not gh['is_configured']:
         return jsonify({"success": False, "error": "GitHub is not configured with repository & token.", "files": []})
     try:
-        files = github_list_signed_files()
+        files = github_list_signed_files(user=g.user)
         return jsonify({"success": True, "files": files, "repo": gh['repo'], "branch": gh['branch']})
     except Exception as e:
         return jsonify({"success": False, "error": str(e), "files": []}), 500
 
 @app.route('/api/github/delete/signed/<path:filename>', methods=['POST', 'DELETE'])
+@login_required
 def api_github_delete_signed(filename):
     """Delete a specific file from GitHub signed/ folder."""
-    gh = get_github_config()
+    gh = get_github_config(g.user)
     if not gh['is_configured']:
         return jsonify({"success": False, "error": "GitHub is not configured."}), 400
     try:
         clean_name = Path(filename).name
-        github_delete_file(f"signed/{clean_name}")
+        github_delete_file(f"signed/{clean_name}", user=g.user)
         return jsonify({"success": True, "message": f"Deleted {clean_name} from GitHub signed folder."})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/github/clear-signed', methods=['POST'])
+@login_required
 def api_github_clear_signed():
     """Delete all files from GitHub signed/ folder in batch."""
-    gh = get_github_config()
+    gh = get_github_config(g.user)
     if not gh['is_configured']:
         return jsonify({"success": False, "error": "GitHub is not configured."}), 400
     try:
-        files = github_list_signed_files()
+        files = github_list_signed_files(user=g.user)
         if not files:
             return jsonify({"success": True, "deleted_count": 0, "message": "GitHub signed folder is already empty."})
 
@@ -1132,7 +1387,7 @@ def api_github_clear_signed():
         errors = []
         for f in files:
             try:
-                github_delete_file(f['path'], sha=f.get('sha'))
+                github_delete_file(f['path'], sha=f.get('sha'), user=g.user)
                 deleted += 1
             except Exception as ge:
                 errors.append(f"{f['name']}: {str(ge)}")
@@ -1146,16 +1401,20 @@ def api_github_clear_signed():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
+
+# ----------------- FOLDER & CONFIG MANAGEMENT -----------------
+
 @app.route('/api/clear/<folder_type>', methods=['POST'])
+@login_required
 def api_clear_folder(folder_type):
-    """Clear all PDF files in a given folder."""
-    config = load_config()
+    """Clear all PDF files in current user's folder."""
+    config = get_user_config(g.user)
     if folder_type == 'signed':
-        target_dir = get_resolved_path(config.get('signed_dir', 'signed'))
+        target_dir = get_resolved_path(config.get('signed_dir'))
     elif folder_type == 'pending':
-        target_dir = get_resolved_path(config.get('pending_dir', 'pending'))
+        target_dir = get_resolved_path(config.get('pending_dir'))
     elif folder_type == 'archive':
-        target_dir = get_resolved_path(config.get('archive_dir', 'pending/.archive'))
+        target_dir = get_resolved_path(config.get('archive_dir'))
     else:
         return jsonify({"success": False, "error": "Invalid folder type"}), 400
 
@@ -1171,15 +1430,16 @@ def api_clear_folder(folder_type):
     return jsonify({"success": True, "count": deleted_count, "message": f"Cleared {deleted_count} files"})
 
 @app.route('/api/download-all/<folder_type>')
+@login_required
 def api_download_all_zip(folder_type):
-    """Export all PDF documents in a folder as a single ZIP archive."""
-    config = load_config()
+    """Export all PDF documents in user's folder as a single ZIP archive."""
+    config = get_user_config(g.user)
     if folder_type == 'signed':
-        target_dir = get_resolved_path(config.get('signed_dir', 'signed'))
-        prefix = "signed_handover_documents"
+        target_dir = get_resolved_path(config.get('signed_dir'))
+        prefix = f"signed_{g.user['username']}"
     elif folder_type == 'pending':
-        target_dir = get_resolved_path(config.get('pending_dir', 'pending'))
-        prefix = "pending_handover_documents"
+        target_dir = get_resolved_path(config.get('pending_dir'))
+        prefix = f"pending_{g.user['username']}"
     else:
         return "Invalid folder", 400
 
@@ -1207,25 +1467,65 @@ def api_download_all_zip(folder_type):
     )
 
 @app.route('/api/config', methods=['GET', 'POST'])
+@login_required
 def api_config():
-    """Get or update application settings."""
+    """Get or update application settings for the currently authenticated user."""
     if request.method == 'POST':
         new_config = request.get_json(silent=True)
         if not new_config:
             return jsonify({"success": False, "error": "Invalid JSON"}), 400
-        current = load_config()
-        current.update(new_config)
-        save_config(current)
+
+        # Save user settings in SQLite database
+        ok, res = db.update_user_settings(g.user['id'], new_config)
+        if not ok:
+            return jsonify({"success": False, "error": res}), 500
+
+        # Refresh user in g and return merged config
+        g.user = db.get_user_by_id(g.user['id'])
+        current = get_user_config(g.user)
+        current['username'] = g.user['username']
+        current['display_name'] = g.user['display_name']
+        current['quick_access_token'] = g.user['quick_access_token']
         return jsonify({"success": True, "config": current})
-    return jsonify(load_config())
+
+    cfg = get_user_config(g.user)
+    cfg['username'] = g.user['username']
+    cfg['display_name'] = g.user['display_name']
+    cfg['quick_access_token'] = g.user['quick_access_token']
+    return jsonify(cfg)
+
+@app.route('/api/user/token/regenerate', methods=['POST'])
+@login_required
+def api_regenerate_token():
+    """Generate a fresh quick-access/API token for current user."""
+    new_token = db.regenerate_user_token(g.user['id'])
+    g.user['quick_access_token'] = new_token
+    return jsonify({"success": True, "token": new_token})
+
+@app.route('/api/user/profile', methods=['POST'])
+@login_required
+def api_update_profile():
+    """Update current user's display name or password."""
+    data = request.get_json(silent=True) or {}
+    display_name = data.get('display_name')
+    new_password = data.get('new_password')
+    ok, msg = db.update_user_profile(g.user['id'], display_name=display_name, password=new_password)
+    if ok:
+        if display_name and display_name.strip():
+            session['display_name'] = display_name.strip()
+        return jsonify({"success": True, "message": msg})
+    return jsonify({"success": False, "error": msg}), 400
 
 @app.route('/api/network-info')
 def api_network_info():
     """Return network IPs and URLs for easy connectivity."""
-    config = load_config()
+    user = get_current_user()
+    config = get_user_config(user)
     ips = get_local_ips()
     port = config.get('port', 5000)
-    urls = [{"ip": ip, "url": f"http://{ip}:{port}/mobile"} for ip in ips]
+    token = user.get('quick_access_token', '') if user else ''
+    token_q = f"?token={token}" if token else ""
+    urls = [{"ip": ip, "url": f"http://{ip}:{port}/mobile{token_q}"} for ip in ips]
     return jsonify({
         "primary_ip": ips[0] if ips else '127.0.0.1',
         "all_ips": ips,
@@ -1233,10 +1533,11 @@ def api_network_info():
         "mobile_urls": urls
     })
 
+
 # ----------------- MAIN ENTRY POINT -----------------
 
 if __name__ == '__main__':
-    cfg = load_config()
+    cfg = load_system_config()
     host = os.environ.get('HOST', cfg.get('host', '0.0.0.0'))
     port = int(os.environ.get('PORT', cfg.get('port', 5000)))
     public_url = os.environ.get('PUBLIC_URL') or cfg.get('public_url', '').strip()
@@ -1246,14 +1547,13 @@ if __name__ == '__main__':
     mobile_url = f"{public_url.rstrip('/')}/mobile" if public_url else f"http://{primary_ip}:{port}/mobile"
 
     print("=" * 60)
-    print("  IT HANDOVER PDF SIGNER - FLASK SERVER")
+    print("  IT SIGNER - MULTI-USER DIGITAL SIGNATURE HUB")
     print("=" * 60)
     print(f"  * Desktop Dashboard: http://localhost:{port}")
     print(f"  * Mobile Phone URL:  {mobile_url}")
-    print(f"  * Pending Folder:    {get_resolved_path(cfg.get('pending_dir', 'pending'))}")
-    print(f"  * Signed Folder:     {get_resolved_path(cfg.get('signed_dir', 'signed'))}")
+    print(f"  * Total Users:       {db.count_users()}")
     print("=" * 60)
-    print("  Scan the QR code on the desktop interface to open on Android.")
+    print("  Multi-user accounts, private folders & logins active.")
     print("=" * 60)
 
     app.run(host=host, port=port, debug=False)
