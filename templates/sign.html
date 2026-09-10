@@ -44,10 +44,15 @@
             </div>
         </div>
         
-        <button onclick="toggleDocPreview()" class="px-3 py-1.5 bg-[#101c3d] hover:bg-[#182b5c] text-cyan-300 hover:text-white text-xs font-semibold rounded-lg border border-cyan-500/30 transition flex items-center gap-1 flex-shrink-0 shadow">
-            <i data-lucide="file-text" class="w-3.5 h-3.5"></i>
-            <span id="previewToggleText">Preview Doc</span>
-        </button>
+        <div class="flex items-center gap-2 flex-shrink-0">
+            <button onclick="toggleDocPreview()" class="px-3 py-1.5 bg-[#101c3d] hover:bg-[#182b5c] text-cyan-300 hover:text-white text-xs font-semibold rounded-lg border border-cyan-500/30 transition flex items-center gap-1 flex-shrink-0 shadow">
+                <i data-lucide="file-text" class="w-3.5 h-3.5"></i>
+                <span id="previewToggleText">Preview Doc</span>
+            </button>
+            <a href="/logout" class="p-2 rounded-xl bg-rose-500/15 hover:bg-rose-500/30 text-rose-300 hover:text-white border border-rose-500/40 transition flex items-center shadow-sm" title="Log Out">
+                <i data-lucide="log-out" class="w-4 h-4 text-rose-400"></i>
+            </a>
+        </div>
     </div>
 
     <!-- Extracted Document Details Banner (Feature 2) -->
