@@ -240,7 +240,7 @@ function renderPendingGrid(files) {
                 <button onclick="openCalibratorModal('${file.name}')" class="p-1.5 bg-[#101c3d] hover:bg-[#182b5c] text-cyan-300 border border-cyan-500/20 rounded-lg text-xs transition" title="Calibrate placement on this PDF">
                     <i data-lucide="move" class="w-3.5 h-3.5"></i>
                 </button>
-                <a href="${file.download_url}" target="_blank" class="p-1.5 bg-[#101c3d] hover:bg-[#182b5c] text-cyan-300 border border-cyan-500/20 rounded-lg text-xs transition" title="Download original">
+                <a href="${file.download_url}" download="${file.name}" target="_blank" class="p-1.5 bg-[#101c3d] hover:bg-[#182b5c] text-cyan-300 border border-cyan-500/20 rounded-lg text-xs transition" title="Download original">
                     <i data-lucide="download" class="w-3.5 h-3.5"></i>
                 </a>
                 <button data-filename="${encodeURIComponent(file.name)}" onclick="deleteDocument('pending', decodeURIComponent(this.getAttribute('data-filename')))" class="p-1.5 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 rounded-lg text-xs transition" title="Delete file">
@@ -307,7 +307,7 @@ function renderSignedGrid(files) {
 
             <!-- Action buttons -->
             <div class="pt-2 border-t border-emerald-500/20 flex items-center gap-1.5">
-                <a href="${file.download_url}" target="_blank" class="flex-1 py-1.5 bg-gradient-to-r from-emerald-600/20 to-teal-600/20 hover:from-emerald-600/30 hover:to-teal-600/30 text-emerald-300 border border-emerald-500/30 rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1.5 shadow-sm">
+                <a href="${file.download_url}" download="${file.name}" target="_blank" class="flex-1 py-1.5 bg-gradient-to-r from-emerald-600/20 to-teal-600/20 hover:from-emerald-600/30 hover:to-teal-600/30 text-emerald-300 border border-emerald-500/30 rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1.5 shadow-sm">
                     <i data-lucide="download" class="w-3.5 h-3.5"></i> Download PDF
                 </a>
                 <button onclick="openPdfPreview('signed', '${file.name}', '${file.last_page_preview_url || file.preview_url}')" class="p-1.5 bg-[#101c3d] hover:bg-[#182b5c] text-cyan-300 border border-cyan-500/20 rounded-lg text-xs transition" title="Preview document">
@@ -735,7 +735,13 @@ function copyDocQrUrl() {
 function openPdfPreview(folder, filename, previewUrl) {
     document.getElementById('pdfPreviewTitle').textContent = filename;
     document.getElementById('pdfPreviewImg').src = `${previewUrl}?zoom=1.8&t=${Date.now()}`;
-    document.getElementById('pdfPreviewDownloadBtn').href = `/download/${folder}/${encodeURIComponent(filename)}`;
+    const token = window.currentUserToken || '';
+    const tokenQuery = token ? `?token=${encodeURIComponent(token)}` : '';
+    const dlBtn = document.getElementById('pdfPreviewDownloadBtn');
+    if (dlBtn) {
+        dlBtn.href = `/download/${folder}/${encodeURIComponent(filename)}${tokenQuery}`;
+        dlBtn.setAttribute('download', filename);
+    }
 
     const modal = document.getElementById('pdfPreviewModal');
     modal.classList.remove('hidden');
@@ -796,12 +802,12 @@ async function openSettingsModal() {
         if (ghRepoInput) ghRepoInput.value = repoVal;
         if (ghTokenInput) ghTokenInput.value = tokenVal;
         if (ghBranchInput) ghBranchInput.value = branchVal;
-        if (ghAutoDelInput) ghAutoDelInput.checked = config.auto_delete_github_pending !== false;
+        if (ghAutoDelInput) ghAutoDelInput.checked = config.auto_delete_github_pending === true;
         if (ghAutoUpInput) ghAutoUpInput.checked = config.auto_upload_github_signed !== false;
         if (ghTestResult) ghTestResult.textContent = '';
 
         document.getElementById('setting_timestamp').checked = recip.add_timestamp !== false;
-        document.getElementById('setting_archive').checked = config.auto_archive_pending !== false;
+        document.getElementById('setting_archive').checked = config.auto_archive_pending === true;
         if (document.getElementById('setting_timezone')) {
             document.getElementById('setting_timezone').value = config.timezone || 'Europe/Prague';
         }
@@ -843,7 +849,7 @@ async function saveSettings(e) {
     const ghRepo = (document.getElementById('setting_github_repo') ? document.getElementById('setting_github_repo').value.trim() : '');
     const ghToken = (document.getElementById('setting_github_token') ? document.getElementById('setting_github_token').value.trim() : '');
     const ghBranch = (document.getElementById('setting_github_branch') ? document.getElementById('setting_github_branch').value.trim() : 'main');
-    const ghAutoDelete = document.getElementById('setting_gh_auto_delete') ? document.getElementById('setting_gh_auto_delete').checked : true;
+    const ghAutoDelete = document.getElementById('setting_gh_auto_delete') ? document.getElementById('setting_gh_auto_delete').checked : false;
     const ghAutoUpload = document.getElementById('setting_gh_auto_upload') ? document.getElementById('setting_gh_auto_upload').checked : true;
 
     const payload = {
@@ -881,7 +887,7 @@ async function saveSettings(e) {
                 timestamp_fontsize: 7.5
             }
         },
-        auto_archive_pending: document.getElementById('setting_archive').checked
+        auto_archive_pending: document.getElementById('setting_archive') ? document.getElementById('setting_archive').checked : false
     };
 
     try {
