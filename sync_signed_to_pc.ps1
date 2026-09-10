@@ -4,6 +4,7 @@
 param (
     [string]$ServerUrl = "https://it-handover-signer.onrender.com",
     [string]$DestinationFolder = "$HOME\OneDrive - Nokian Tyres\Signed Handover Documents",
+    [string]$Token = "",
     [switch]$Watch = $true,
     [int]$IntervalSeconds = 15
 )
@@ -13,6 +14,11 @@ Write-Host "  IT Handover Signer - Local PC Folder Sync" -ForegroundColor Cyan
 Write-Host "===================================================" -ForegroundColor Cyan
 Write-Host "Server URL:         $ServerUrl" -ForegroundColor Yellow
 Write-Host "Destination Folder: $DestinationFolder" -ForegroundColor Yellow
+if ($Token) {
+    Write-Host "User Token:         $($Token.Substring(0, [System.Math]::Min(8, $Token.Length)))... (Authenticated)" -ForegroundColor Green
+} else {
+    Write-Host "User Token:         Not provided (using default session if available)" -ForegroundColor Gray
+}
 Write-Host ""
 
 # Ensure target folder exists
@@ -24,6 +30,9 @@ if (-not (Test-Path $DestinationFolder)) {
 function Sync-SignedFiles {
     try {
         $apiEndpoint = "$($ServerUrl.TrimEnd('/'))/api/documents"
+        if ($Token) {
+            $apiEndpoint += "?token=$([System.Uri]::EscapeDataString($Token))"
+        }
         $resp = Invoke-RestMethod -Uri $apiEndpoint -Method Get -TimeoutSec 10
         $signedDocs = $resp.signed
         
@@ -37,6 +46,9 @@ function Sync-SignedFiles {
 
             if (-not (Test-Path $localPath)) {
                 $downloadUrl = "$($ServerUrl.TrimEnd('/'))/download/signed/$([System.Uri]::EscapeDataString($filename))"
+                if ($Token) {
+                    $downloadUrl += "?token=$([System.Uri]::EscapeDataString($Token))"
+                }
                 Write-Host "Downloading new signed document: $filename ..." -ForegroundColor Cyan
                 Invoke-WebRequest -Uri $downloadUrl -OutFile $localPath
                 Write-Host "  [SAVED] -> $localPath" -ForegroundColor Green
