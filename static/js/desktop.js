@@ -96,7 +96,11 @@ function updateHeroQr() {
     const fullUrlSpan = document.getElementById('fullMobileUrl');
     const openLink = document.getElementById('openMobileLink');
     
-    const targetUrl = `${getBaseUrl()}/mobile`;
+    let targetUrl = `${getBaseUrl()}/mobile`;
+    const token = window.currentUserToken || '';
+    if (token) {
+        targetUrl += (targetUrl.includes('?') ? '&' : '?') + `token=${encodeURIComponent(token)}`;
+    }
     if (qrImg) qrImg.src = `/api/qr?url=${encodeURIComponent(targetUrl)}`;
     if (fullUrlSpan) fullUrlSpan.textContent = targetUrl;
     if (openLink) openLink.href = targetUrl;
@@ -177,7 +181,9 @@ function renderPendingGrid(files) {
     }
 
     container.innerHTML = files.map(file => {
-        const directSignUrl = `${getBaseUrl()}/sign/${encodeURIComponent(file.name)}`;
+        const token = window.currentUserToken || '';
+        const tokenQuery = token ? `?token=${encodeURIComponent(token)}` : '';
+        const directSignUrl = `${getBaseUrl()}/sign/${encodeURIComponent(file.name)}${tokenQuery}`;
         const meta = file.metadata || {};
         const employeeName = meta.employee_name;
         const hwFirst = meta.hardware && meta.hardware.length > 0 ? meta.hardware[0] : null;
@@ -228,7 +234,7 @@ function renderPendingGrid(files) {
                 <button onclick="showDocQr('${file.name}', '${directSignUrl}')" class="flex-1 py-1.5 bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-400/30 rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1 shadow-sm">
                     <i data-lucide="qr-code" class="w-3.5 h-3.5"></i> QR
                 </button>
-                <a href="/sign/${encodeURIComponent(file.name)}" class="flex-1 py-1.5 bg-[#101c3d] hover:bg-[#182b5c] text-white border border-cyan-500/30 rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1">
+                <a href="${directSignUrl}" class="flex-1 py-1.5 bg-[#101c3d] hover:bg-[#182b5c] text-white border border-cyan-500/30 rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1">
                     <i data-lucide="pen" class="w-3.5 h-3.5 text-cyan-400"></i> Sign
                 </a>
                 <button onclick="openCalibratorModal('${file.name}')" class="p-1.5 bg-[#101c3d] hover:bg-[#182b5c] text-cyan-300 border border-cyan-500/20 rounded-lg text-xs transition" title="Calibrate placement on this PDF">
@@ -700,6 +706,10 @@ async function saveCalibratorPlacement() {
 // ----------------- SETTINGS & MODALS -----------------
 
 function showDocQr(filename, url) {
+    const token = window.currentUserToken || '';
+    if (token && !url.includes('token=')) {
+        url += (url.includes('?') ? '&' : '?') + `token=${encodeURIComponent(token)}`;
+    }
     currentDocQrUrl = url;
     document.getElementById('docQrFilename').textContent = filename;
     document.getElementById('docQrImg').src = `/api/qr?url=${encodeURIComponent(url)}`;
@@ -796,6 +806,19 @@ async function openSettingsModal() {
             document.getElementById('setting_timezone').value = config.timezone || 'Europe/Prague';
         }
 
+        // Populate User Token & Sync Command
+        if (config.quick_access_token) {
+            window.currentUserToken = config.quick_access_token;
+            const tokenInput = document.getElementById('setting_user_token');
+            const syncInput = document.getElementById('setting_sync_command');
+            if (tokenInput) tokenInput.value = config.quick_access_token;
+            if (syncInput) syncInput.value = `powershell -ExecutionPolicy Bypass -File .\\sync_signed_to_pc.ps1 -Token "${config.quick_access_token}"`;
+        }
+        if (config.display_name) {
+            const displayEl = document.getElementById('setting_user_display');
+            if (displayEl) displayEl.textContent = config.display_name;
+        }
+
         const modal = document.getElementById('settingsModal');
         modal.classList.remove('hidden');
         modal.classList.add('flex');
@@ -887,6 +910,10 @@ async function saveSettings(e) {
             }
 
             closeSettingsModal();
+            if (data.config && data.config.pending_dir) {
+                const pDirEl = document.getElementById('dropZonePendingDir');
+                if (pDirEl) pDirEl.textContent = data.config.pending_dir;
+            }
             alert('Settings saved successfully!');
             if (pubUrl) {
                 currentIp = pubUrl;
@@ -1425,5 +1452,65 @@ async function testGitHubConnectionFromSettings() {
     } catch (err) {
         resultEl.className = 'text-[11px] font-medium text-rose-400 py-1.5 leading-relaxed';
         resultEl.textContent = `✕ Connection failed: ${err.message}`;
+    }
+}
+
+// ----------------- USER PROFILE & TOKEN MANAGEMENT -----------------
+
+function setOneDrivePreset() {
+    const pendingInput = document.getElementById('setting_pending_dir');
+    const signedInput = document.getElementById('setting_signed_dir');
+    const username = window.currentUsername || '';
+
+    const oneDriveSigned = `$HOME\\OneDrive - Nokian Tyres\\Signed Handover Documents`;
+    const defaultPending = username ? `pending/${username}` : `pending`;
+
+    if (signedInput) {
+        signedInput.value = oneDriveSigned;
+    }
+    if (pendingInput && !pendingInput.value.trim()) {
+        pendingInput.value = defaultPending;
+    }
+}
+
+async function regeneratePersonalToken() {
+    if (!confirm('Are you sure you want to regenerate your Quick-Access / API Token? Any existing mobile shortcuts or sync scripts using your old token will need to be updated with the new token.')) {
+        return;
+    }
+    try {
+        const res = await fetch('/api/user/token/regenerate', { method: 'POST' });
+        const data = await res.json();
+        if (data.success && data.token) {
+            window.currentUserToken = data.token;
+            const tokenInput = document.getElementById('setting_user_token');
+            const syncInput = document.getElementById('setting_sync_command');
+            if (tokenInput) tokenInput.value = data.token;
+            if (syncInput) syncInput.value = `powershell -ExecutionPolicy Bypass -File .\\sync_signed_to_pc.ps1 -Token "${data.token}"`;
+            updateHeroQr();
+            renderPendingGrid(pendingFiles);
+            alert('New token generated successfully! Your desktop QR code and sync commands have been updated.');
+        } else {
+            alert('Failed to regenerate token: ' + (data.error || 'Unknown error'));
+        }
+    } catch (e) {
+        alert('Network error: ' + e.message);
+    }
+}
+
+function copyPersonalToken() {
+    const input = document.getElementById('setting_user_token');
+    if (input) {
+        navigator.clipboard.writeText(input.value).then(() => {
+            alert('Personal access token copied to clipboard!');
+        });
+    }
+}
+
+function copySyncCommand() {
+    const input = document.getElementById('setting_sync_command');
+    if (input) {
+        navigator.clipboard.writeText(input.value).then(() => {
+            alert('PowerShell sync command copied to clipboard!');
+        });
     }
 }
