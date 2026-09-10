@@ -118,7 +118,13 @@ function copyMobileUrl() {
 
 async function refreshDocuments() {
     try {
-        const res = await fetch('/api/documents');
+        const token = window.currentUserToken || '';
+        const docsUrl = token ? `/api/documents?token=${encodeURIComponent(token)}` : '/api/documents';
+        const res = await fetch(docsUrl);
+        if (res.status === 401) {
+            console.warn('Session expired, checking authentication...');
+            return;
+        }
         const data = await res.json();
         
         pendingFiles = data.pending || [];
@@ -464,8 +470,11 @@ async function handleFileUpload(file) {
     const formData = new FormData();
     formData.append('file', file);
 
+    const token = window.currentUserToken || '';
+    const uploadUrl = token ? `/api/upload?token=${encodeURIComponent(token)}` : '/api/upload';
+
     try {
-        const res = await fetch('/api/upload', {
+        const res = await fetch(uploadUrl, {
             method: 'POST',
             body: formData
         });
@@ -785,7 +794,7 @@ async function openSettingsModal() {
         const ghTestResult = document.getElementById('ghSettingsTestResult');
         let repoVal = config.github_repo || '';
         let tokenVal = config.github_token || '';
-        let branchVal = config.github_branch || 'main';
+        let branchVal = (config.github_branch && config.github_branch !== 'main') ? config.github_branch : 'data';
 
         if (!repoVal || !tokenVal) {
             try {
@@ -794,7 +803,7 @@ async function openSettingsModal() {
                     const parsed = JSON.parse(cached);
                     if (!repoVal && parsed.github_repo) repoVal = parsed.github_repo;
                     if (!tokenVal && parsed.github_token) tokenVal = parsed.github_token;
-                    if (parsed.github_branch) branchVal = parsed.github_branch;
+                    if (parsed.github_branch) branchVal = (parsed.github_branch === 'main' ? 'data' : parsed.github_branch);
                 }
             } catch (e) {}
         }
@@ -848,7 +857,8 @@ async function saveSettings(e) {
 
     const ghRepo = (document.getElementById('setting_github_repo') ? document.getElementById('setting_github_repo').value.trim() : '');
     const ghToken = (document.getElementById('setting_github_token') ? document.getElementById('setting_github_token').value.trim() : '');
-    const ghBranch = (document.getElementById('setting_github_branch') ? document.getElementById('setting_github_branch').value.trim() : 'main');
+    let ghBranch = (document.getElementById('setting_github_branch') ? document.getElementById('setting_github_branch').value.trim() : 'data') || 'data';
+    if (ghBranch === 'main') ghBranch = 'data';
     const ghAutoDelete = document.getElementById('setting_gh_auto_delete') ? document.getElementById('setting_gh_auto_delete').checked : false;
     const ghAutoUpload = document.getElementById('setting_gh_auto_upload') ? document.getElementById('setting_gh_auto_upload').checked : true;
 
@@ -946,6 +956,10 @@ async function checkGitHubStatus() {
                 const cached = localStorage.getItem('it_signer_github_sync');
                 if (cached) {
                     const parsed = JSON.parse(cached);
+                    if (parsed.github_branch === 'main') {
+                        parsed.github_branch = 'data';
+                        localStorage.setItem('it_signer_github_sync', JSON.stringify(parsed));
+                    }
                     if (parsed.github_repo && parsed.github_token) {
                         console.log('Restoring GitHub credentials from browser storage...');
                         const restoreRes = await fetch('/api/config', {
@@ -956,7 +970,7 @@ async function checkGitHubStatus() {
                         const restoreData = await restoreRes.json();
                         if (restoreData.success) {
                             res = await fetch('/api/github/status');
-                            data = await res.json();
+                            data = await restoreData.config || (await res.json());
                         }
                     }
                 }
