@@ -6,6 +6,15 @@ services:
     startCommand: gunicorn wsgi:app --bind 0.0.0.0:$PORT
     plan: free
     autoDeploy: true
+    buildFilter:
+      ignoredPaths:
+        - signed/**
+        - pending/**
+        - users_backup.json
+        - "*.md"
+        - "*.bat"
+        - "*.ps1"
+        - LICENSE
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
