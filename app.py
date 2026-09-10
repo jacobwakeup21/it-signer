@@ -520,31 +520,51 @@ def github_list_pending_files(user=None):
 def github_list_signed_files(user=None):
     return github_list_folder_files('signed', user=user)
 
-def github_delete_file(path_in_repo, sha=None, commit_msg=None, user=None):
-    """Delete a file from GitHub repository."""
+def github_delete_file(path_in_repo, sha=None, commit_msg=None, user=None, branch=None):
+    """
+    Delete a file from GitHub repository across all relevant branches where it exists
+    (configured branch and main), or on a specifically designated branch.
+    """
     gh = get_github_config(user)
     if not gh['is_configured']:
         raise ValueError("GitHub integration is not configured.")
 
     clean_path = path_in_repo.lstrip('/')
     encoded_path = quote_github_path(clean_path)
-
-    if not sha:
-        query = urllib.parse.urlencode({'ref': gh['branch']})
-        endpoint = f"repos/{gh['repo']}/contents/{encoded_path}?{query}"
-        item = github_api_request("GET", endpoint, user=user)
-        sha = item.get('sha')
-        if not sha:
-            raise RuntimeError(f"Could not retrieve SHA for {clean_path}")
-
     filename = Path(clean_path).name
     msg = commit_msg or f"Delete {filename} via IT Signer"
-    payload = {
-        "message": msg,
-        "sha": sha,
-        "branch": gh['branch']
-    }
-    return github_api_request("DELETE", f"repos/{gh['repo']}/contents/{encoded_path}", data=payload, user=user)
+
+    target_branches = [branch] if branch else [gh.get('branch', 'data')]
+    if not branch and 'main' not in target_branches:
+        target_branches.append('main')
+
+    deleted_count = 0
+    errors = []
+
+    for b_name in target_branches:
+        try:
+            # Query SHA on this specific branch to ensure it exists on b_name
+            query = urllib.parse.urlencode({'ref': b_name})
+            endpoint = f"repos/{gh['repo']}/contents/{encoded_path}?{query}"
+            item = github_api_request("GET", endpoint, user=user)
+            b_sha = item.get('sha') if isinstance(item, dict) else None
+            if b_sha:
+                payload = {
+                    "message": msg,
+                    "sha": b_sha,
+                    "branch": b_name
+                }
+                github_api_request("DELETE", f"repos/{gh['repo']}/contents/{encoded_path}", data=payload, user=user)
+                deleted_count += 1
+                print(f"[GITHUB-DELETE] Deleted '{clean_path}' from branch '{b_name}'.")
+        except Exception as e:
+            if "404" not in str(e):
+                errors.append(f"{b_name}: {e}")
+
+    if deleted_count == 0 and errors:
+        raise RuntimeError(f"Could not delete {filename} from GitHub: {'; '.join(errors)}")
+
+    return deleted_count > 0
 
 def github_upload_file(path_in_repo, file_bytes, commit_msg=None, user=None):
     """Upload or update a file in GitHub repository."""
@@ -1595,13 +1615,30 @@ def api_github_pending():
 @app.route('/api/github/delete/pending/<path:filename>', methods=['POST', 'DELETE'])
 @login_required
 def api_github_delete_pending(filename):
-    """Delete a specific file from GitHub pending/ folder."""
+    """Delete a specific file from GitHub pending/ folder across branches, and clean up local copy."""
     gh = get_github_config(g.user)
     if not gh['is_configured']:
-        return jsonify({"success": False, "error": "GitHub is not configured."}), 400
+        return jsonify({"success": False, "error": "GitHub is not configured with repository & token."}), 400
     try:
         clean_name = Path(filename).name
         github_delete_file(f"pending/{clean_name}", user=g.user)
+
+        # Also remove local copy from pending directory if present
+        config = get_user_config(g.user)
+        pending_dir = get_resolved_path(config.get('pending_dir'))
+        local_f = pending_dir / clean_name
+        if local_f.exists():
+            try:
+                local_f.unlink()
+            except Exception:
+                pass
+        root_f = BASE_DIR / 'pending' / clean_name
+        if root_f.exists():
+            try:
+                root_f.unlink()
+            except Exception:
+                pass
+
         return jsonify({"success": True, "message": f"Deleted {clean_name} from GitHub pending folder."})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
@@ -1609,10 +1646,10 @@ def api_github_delete_pending(filename):
 @app.route('/api/github/clear-pending', methods=['POST'])
 @login_required
 def api_github_clear_pending():
-    """Delete all files from GitHub pending/ folder in batch."""
+    """Delete all files from GitHub pending/ folder in batch across branches."""
     gh = get_github_config(g.user)
     if not gh['is_configured']:
-        return jsonify({"success": False, "error": "GitHub is not configured."}), 400
+        return jsonify({"success": False, "error": "GitHub is not configured with repository & token."}), 400
     try:
         files = github_list_pending_files(user=g.user)
         if not files:
@@ -1622,7 +1659,7 @@ def api_github_clear_pending():
         errors = []
         for f in files:
             try:
-                github_delete_file(f['path'], sha=f.get('sha'), user=g.user)
+                github_delete_file(f['path'], user=g.user, branch=f.get('branch'))
                 deleted += 1
             except Exception as ge:
                 errors.append(f"{f['name']}: {str(ge)}")
@@ -1652,10 +1689,10 @@ def api_github_signed():
 @app.route('/api/github/delete/signed/<path:filename>', methods=['POST', 'DELETE'])
 @login_required
 def api_github_delete_signed(filename):
-    """Delete a specific file from GitHub signed/ folder."""
+    """Delete a specific file from GitHub signed/ folder across branches."""
     gh = get_github_config(g.user)
     if not gh['is_configured']:
-        return jsonify({"success": False, "error": "GitHub is not configured."}), 400
+        return jsonify({"success": False, "error": "GitHub is not configured with repository & token."}), 400
     try:
         clean_name = Path(filename).name
         github_delete_file(f"signed/{clean_name}", user=g.user)
@@ -1666,10 +1703,10 @@ def api_github_delete_signed(filename):
 @app.route('/api/github/clear-signed', methods=['POST'])
 @login_required
 def api_github_clear_signed():
-    """Delete all files from GitHub signed/ folder in batch."""
+    """Delete all files from GitHub signed/ folder in batch across branches."""
     gh = get_github_config(g.user)
     if not gh['is_configured']:
-        return jsonify({"success": False, "error": "GitHub is not configured."}), 400
+        return jsonify({"success": False, "error": "GitHub is not configured with repository & token."}), 400
     try:
         files = github_list_signed_files(user=g.user)
         if not files:
@@ -1679,7 +1716,7 @@ def api_github_clear_signed():
         errors = []
         for f in files:
             try:
-                github_delete_file(f['path'], sha=f.get('sha'), user=g.user)
+                github_delete_file(f['path'], user=g.user, branch=f.get('branch'))
                 deleted += 1
             except Exception as ge:
                 errors.append(f"{f['name']}: {str(ge)}")
