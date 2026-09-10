@@ -103,11 +103,11 @@ DEFAULT_CONFIG = {
             "timestamp_fontsize": 7.5
         }
     },
-    "auto_archive_pending": True,
+    "auto_archive_pending": False,
     "github_repo": "",
     "github_token": "",
     "github_branch": "main",
-    "auto_delete_github_pending": True,
+    "auto_delete_github_pending": False,
     "auto_upload_github_signed": True
 }
 
@@ -362,7 +362,7 @@ def get_github_config(user=None):
     raw_repo = os.environ.get('GITHUB_REPO') or cfg.get('github_repo', '')
     token = os.environ.get('GITHUB_TOKEN') or cfg.get('github_token', '')
     branch = os.environ.get('GITHUB_BRANCH') or cfg.get('github_branch', 'main')
-    auto_delete = cfg.get('auto_delete_github_pending', True)
+    auto_delete = cfg.get('auto_delete_github_pending', False)
     auto_upload = cfg.get('auto_upload_github_signed', True)
 
     repo = raw_repo.strip()
@@ -553,6 +553,118 @@ def github_upload_file(path_in_repo, file_bytes, commit_msg=None, user=None):
         pass
 
     return github_api_request("PUT", f"repos/{gh['repo']}/contents/{encoded_path}", data=payload, user=user)
+
+def ensure_file_on_disk(folder_type, filename, user=None):
+    """
+    Ensure the requested file exists in the user's local folder.
+    If missing locally (e.g. after Render container restart or spin-down),
+    attempt to fetch it from the GitHub repository and save it to disk.
+    Returns Path object if file exists/restored, or None if not found anywhere.
+    """
+    config = get_user_config(user)
+    if folder_type == 'pending':
+        target_dir = get_resolved_path(config.get('pending_dir'))
+    elif folder_type == 'signed':
+        target_dir = get_resolved_path(config.get('signed_dir'))
+    elif folder_type == 'archive':
+        target_dir = get_resolved_path(config.get('archive_dir'))
+    else:
+        return None
+
+    clean_name = Path(filename).name
+    local_path = target_dir / clean_name
+    if local_path.exists():
+        return local_path
+
+    # Check root folder (BASE_DIR / folder_type / clean_name)
+    base_fallback = BASE_DIR / folder_type / clean_name
+    if base_fallback.exists():
+        return base_fallback
+
+    # Fetch from GitHub repository if configured
+    gh_cfg = get_github_config(user)
+    if gh_cfg.get('is_configured'):
+        cand_paths = [
+            f"{folder_type}/{clean_name}",
+            f"{config.get('pending_dir' if folder_type == 'pending' else 'signed_dir')}/{clean_name}".replace('\\', '/').strip('/')
+        ]
+        cand_paths = list(dict.fromkeys(cand_paths))
+
+        for repo_path in cand_paths:
+            try:
+                encoded = quote_github_path(repo_path)
+                query = urllib.parse.urlencode({'ref': gh_cfg['branch']})
+                item = github_api_request("GET", f"repos/{gh_cfg['repo']}/contents/{encoded}?{query}", user=user)
+                file_bytes = None
+                if isinstance(item, dict):
+                    if item.get('content'):
+                        file_bytes = base64.b64decode(item['content'])
+                    elif item.get('download_url'):
+                        req = urllib.request.Request(item['download_url'], headers={
+                            "Authorization": f"Bearer {gh_cfg['token']}",
+                            "User-Agent": "IT-Signer/2.0"
+                        })
+                        with urllib.request.urlopen(req, timeout=20) as resp:
+                            file_bytes = resp.read()
+
+                if file_bytes:
+                    target_dir.mkdir(parents=True, exist_ok=True)
+                    local_path.write_bytes(file_bytes)
+                    print(f"[CLOUD-FALLBACK] Restored '{clean_name}' from GitHub ({repo_path}) to local disk.")
+                    return local_path
+            except Exception:
+                pass
+
+    return None
+
+_last_github_sync = {}
+
+def sync_from_github_if_needed(user=None, force=False):
+    """
+    Synchronize files from GitHub repository to local disk if local folder is empty
+    (e.g. after container spin-down / redeploy on Render) or if periodically due.
+    """
+    now = datetime.now(timezone.utc).timestamp()
+    u = user or (getattr(g, 'user', None) if hasattr(g, 'user') else None) or get_current_user()
+    username = u.get('username', 'default') if isinstance(u, dict) else 'default'
+    last_time = _last_github_sync.get(username, 0)
+
+    config = get_user_config(u)
+    pending_dir = get_resolved_path(config.get('pending_dir'))
+    signed_dir = get_resolved_path(config.get('signed_dir'))
+
+    has_pending = any(p for p in pending_dir.glob('*.pdf') if not p.name.startswith('.')) if pending_dir.exists() else False
+    has_signed = any(p for p in signed_dir.glob('*.pdf') if not p.name.startswith('.')) if signed_dir.exists() else False
+    is_empty = not has_pending and not has_signed
+
+    if not force and not is_empty and (now - last_time < 60):
+        return
+
+    gh_cfg = get_github_config(u)
+    if not gh_cfg.get('is_configured'):
+        return
+
+    _last_github_sync[username] = now
+
+    try:
+        gh_pending = github_list_pending_files(user=u)
+        for gf in gh_pending:
+            fname = gf.get('name', '')
+            if fname.lower().endswith('.pdf') and not fname.startswith('.'):
+                if not (pending_dir / fname).exists():
+                    ensure_file_on_disk('pending', fname, user=u)
+    except Exception as e:
+        print(f"Notice: sync pending from GitHub: {e}")
+
+    try:
+        gh_signed = github_list_signed_files(user=u)
+        for gf in gh_signed:
+            fname = gf.get('name', '')
+            if fname.lower().endswith('.pdf') and not fname.startswith('.'):
+                if not (signed_dir / fname).exists():
+                    ensure_file_on_disk('signed', fname, user=u)
+    except Exception as e:
+        print(f"Notice: sync signed from GitHub: {e}")
 
 def sync_users_from_cloud():
     """If DB has 0 users, restore from local backup or GitHub repository."""
@@ -862,10 +974,9 @@ def mobile_list():
 def mobile_sign(filename):
     """Mobile signing interface for a specific PDF in user's pending folder."""
     config = get_user_config(g.user)
-    pending_dir = get_resolved_path(config.get('pending_dir'))
-    file_path = pending_dir / filename
+    file_path = ensure_file_on_disk('pending', filename, g.user)
     
-    if not file_path.exists():
+    if not file_path or not file_path.exists():
         return render_template('error.html', 
                                title="Document Not Found", 
                                message=f"The requested document '{filename}' is no longer in your pending folder. It may have already been signed."), 404
@@ -876,7 +987,7 @@ def mobile_sign(filename):
     metadata = extract_pdf_metadata(file_path)
     
     return render_template('sign.html', 
-                           filename=filename, 
+                           filename=file_path.name, 
                            page_count=page_count,
                            file_size=file_size,
                            mod_time=mod_time,
@@ -897,6 +1008,8 @@ def signed_success(filename):
 @login_required
 def api_documents():
     """Return lists of pending and signed PDF files for current user."""
+    sync_from_github_if_needed(g.user)
+
     config = get_user_config(g.user)
     pending_dir = get_resolved_path(config.get('pending_dir'))
     signed_dir = get_resolved_path(config.get('signed_dir'))
@@ -950,10 +1063,10 @@ def api_documents():
 @login_required
 def api_get_metadata(folder_type, filename):
     """Return extracted metadata for a specific PDF in user's folder."""
-    config = get_user_config(g.user)
-    target_dir = get_resolved_path(config.get('pending_dir' if folder_type == 'pending' else 'signed_dir'))
-    file_path = target_dir / filename
-    if not file_path.exists():
+    if folder_type not in ('pending', 'signed', 'archive'):
+        return jsonify({"success": False, "error": "Invalid folder"}), 400
+    file_path = ensure_file_on_disk(folder_type, filename, g.user)
+    if not file_path or not file_path.exists():
         return jsonify({"success": False, "error": "File not found"}), 404
     return jsonify({"success": True, "metadata": extract_pdf_metadata(file_path)})
 
@@ -967,10 +1080,11 @@ def api_page_dimensions(folder_type, filename, page):
     except ValueError:
         page_num = -1
 
-    config = get_user_config(g.user)
-    target_dir = get_resolved_path(config.get('pending_dir' if folder_type == 'pending' else 'signed_dir'))
-    file_path = target_dir / filename
-    if not file_path.exists():
+    if folder_type not in ('pending', 'signed', 'archive'):
+        return jsonify({"success": False, "error": "Invalid folder"}), 400
+
+    file_path = ensure_file_on_disk(folder_type, filename, g.user)
+    if not file_path or not file_path.exists():
         return jsonify({"success": False, "error": "File not found"}), 404
 
     try:
@@ -1000,16 +1114,11 @@ def api_preview(folder_type, filename, page):
     except ValueError:
         page_num = -1
 
-    config = get_user_config(g.user)
-    if folder_type == 'pending':
-        target_dir = get_resolved_path(config.get('pending_dir'))
-    elif folder_type == 'signed':
-        target_dir = get_resolved_path(config.get('signed_dir'))
-    else:
+    if folder_type not in ('pending', 'signed', 'archive'):
         return "Invalid folder", 400
 
-    file_path = target_dir / filename
-    if not file_path.exists():
+    file_path = ensure_file_on_disk(folder_type, filename, g.user)
+    if not file_path or not file_path.exists():
         return "File not found", 404
 
     try:
@@ -1101,6 +1210,17 @@ def api_upload():
         save_path = pending_dir / clean_name
 
     file.save(str(save_path))
+
+    # Sync to GitHub pending folder for persistence across container restarts
+    gh_cfg = get_github_config(g.user)
+    if gh_cfg.get('is_configured'):
+        try:
+            with open(save_path, 'rb') as pf:
+                pdf_bytes = pf.read()
+            github_upload_file(f"pending/{clean_name}", pdf_bytes, commit_msg=f"Upload pending document {clean_name} via IT Signer", user=g.user)
+        except Exception as ge:
+            print(f"Notice: could not sync uploaded pending PDF to GitHub: {ge}")
+
     token = g.user.get('quick_access_token', '')
     token_q = f"?token={token}" if token else ""
     return jsonify({
@@ -1229,8 +1349,8 @@ def api_sign(filename):
         doc.save(str(output_path), garbage=4, deflate=True)
         doc.close()
 
-        # Archive pending original file
-        if config.get('auto_archive_pending', True):
+        # Archive pending original file (disabled by default so pending documents stay in workspace)
+        if config.get('auto_archive_pending', False):
             try:
                 archive_dir.mkdir(parents=True, exist_ok=True)
                 archived_path = archive_dir / source_path.name
@@ -1269,7 +1389,7 @@ def api_sign(filename):
         token = g.user.get('quick_access_token', '')
         token_q = f"?token={token}" if token else ""
         return jsonify({
-            "success": True,
+            "success": True, 
             "filename": signed_filename,
             "download_url": f"/download/signed/{signed_filename}{token_q}",
             "preview_url": f"/api/preview/signed/{signed_filename}/1{token_q}",
@@ -1283,18 +1403,23 @@ def api_sign(filename):
 @app.route('/download/<folder_type>/<path:filename>')
 @login_required
 def download_file(folder_type, filename):
-    """Download a pending, signed, or archived PDF from user's directory."""
-    config = get_user_config(g.user)
-    if folder_type == 'pending':
-        target_dir = get_resolved_path(config.get('pending_dir'))
-    elif folder_type == 'signed':
-        target_dir = get_resolved_path(config.get('signed_dir'))
-    elif folder_type == 'archive':
-        target_dir = get_resolved_path(config.get('archive_dir'))
-    else:
-        return "Invalid folder", 400
+    """Download a pending, signed, or archived PDF from user's directory as an attachment."""
+    if folder_type not in ('pending', 'signed', 'archive'):
+        return jsonify({"success": False, "error": "Invalid folder"}), 400
 
-    return send_from_directory(str(target_dir), filename, as_attachment=False)
+    file_path = ensure_file_on_disk(folder_type, filename, g.user)
+    if not file_path or not file_path.exists():
+        return render_template('error.html',
+                               title="Document Not Found",
+                               message=f"The requested document '{filename}' was not found on the server or in the GitHub repository."), 404
+
+    clean_name = file_path.name
+    return send_file(
+        str(file_path),
+        mimetype='application/pdf',
+        as_attachment=True,
+        download_name=clean_name
+    )
 
 @app.route('/api/documents/<folder_type>/<path:filename>', methods=['DELETE'])
 @app.route('/api/delete/<folder_type>/<path:filename>', methods=['POST', 'DELETE'])
