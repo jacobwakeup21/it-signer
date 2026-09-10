@@ -971,6 +971,8 @@ async function checkGitHubStatus() {
                         if (restoreData.success) {
                             res = await fetch('/api/github/status');
                             data = await restoreData.config || (await res.json());
+                            await fetch('/api/github/sync-now', { method: 'POST' }).catch(() => {});
+                            await refreshDocuments();
                         }
                     }
                 }
@@ -991,6 +993,13 @@ async function checkGitHubStatus() {
                 const sData = await sRes.json();
                 if (pData.success && Array.isArray(pData.files)) gitHubPendingFiles = pData.files;
                 if (sData.success && Array.isArray(sData.files)) gitHubSignedFiles = sData.files;
+
+                // Auto-sync if GitHub has pending files that are not yet visible in main grid
+                if (gitHubPendingFiles.length > 0 && pendingFiles.length === 0) {
+                    console.log('Auto-syncing missing pending files from GitHub...');
+                    await fetch('/api/github/sync-now', { method: 'POST' }).catch(() => {});
+                    await refreshDocuments();
+                }
             } catch (e) {
                 console.warn('Error updating GitHub lists:', e);
             }
@@ -1144,6 +1153,7 @@ async function refreshCurrentGitHubFolder() {
         }
 
         container.innerHTML = files.map(file => {
+            const isPending = (folder === 'pending');
             return `
             <div class="bg-slate-950/70 border border-slate-800 hover:border-slate-700 rounded-xl p-3 flex items-center justify-between gap-3 transition">
                 <div class="flex items-center gap-3 min-w-0">
@@ -1161,9 +1171,14 @@ async function refreshCurrentGitHubFolder() {
                         </div>
                     </div>
                 </div>
-                <button data-folder="${folder}" data-filename="${encodeURIComponent(file.name)}" onclick="deleteGitHubFile(this.getAttribute('data-folder'), decodeURIComponent(this.getAttribute('data-filename')))" class="px-3 py-1.5 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 rounded-lg text-xs font-semibold transition flex items-center gap-1 flex-shrink-0" title="Delete from GitHub repository">
-                    <i data-lucide="trash-2" class="w-3.5 h-3.5"></i> Delete
-                </button>
+                <div class="flex items-center gap-1.5 flex-shrink-0">
+                    <button data-folder="${folder}" data-filename="${encodeURIComponent(file.name)}" onclick="syncAndSignGitHubFile(this.getAttribute('data-folder'), decodeURIComponent(this.getAttribute('data-filename')))" class="px-2.5 py-1.5 bg-sky-600/20 hover:bg-sky-600/30 text-sky-300 border border-sky-500/30 rounded-lg text-xs font-semibold transition flex items-center gap-1" title="${isPending ? 'Sync and open for signing' : 'Sync to local signed list'}">
+                        <i data-lucide="${isPending ? 'pen' : 'download-cloud'}" class="w-3.5 h-3.5"></i> ${isPending ? 'Sync & Sign' : 'Sync to Local'}
+                    </button>
+                    <button data-folder="${folder}" data-filename="${encodeURIComponent(file.name)}" onclick="deleteGitHubFile(this.getAttribute('data-folder'), decodeURIComponent(this.getAttribute('data-filename')))" class="px-2.5 py-1.5 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 rounded-lg text-xs font-semibold transition flex items-center gap-1" title="Delete from GitHub repository">
+                        <i data-lucide="trash-2" class="w-3.5 h-3.5"></i> Delete
+                    </button>
+                </div>
             </div>
             `;
         }).join('');
@@ -1224,6 +1239,44 @@ async function clearAllCurrentGitHubFolder() {
         }
     } catch (err) {
         alert(`Failed to clear GitHub ${fType}: ${err.message}`);
+    }
+}
+
+async function syncAllFromGitHub() {
+    const syncLabel = document.getElementById('syncFromGitHubLabel');
+    const origText = syncLabel ? syncLabel.textContent : '';
+    if (syncLabel) syncLabel.textContent = 'Syncing...';
+    try {
+        const res = await fetch('/api/github/sync-now', { method: 'POST' });
+        const data = await res.json();
+        if (data.success) {
+            await refreshDocuments();
+            await checkGitHubStatus();
+            refreshCurrentGitHubFolder();
+            if (syncLabel) syncLabel.textContent = 'Synced!';
+            setTimeout(() => { if (syncLabel) syncLabel.textContent = origText; }, 2000);
+        } else {
+            alert(data.error || 'Failed to sync from GitHub');
+            if (syncLabel) syncLabel.textContent = origText;
+        }
+    } catch (e) {
+        alert(`Error syncing: ${e.message}`);
+        if (syncLabel) syncLabel.textContent = origText;
+    }
+}
+
+async function syncAndSignGitHubFile(folder, filename) {
+    try {
+        await fetch('/api/github/sync-now', { method: 'POST' });
+        await refreshDocuments();
+        closeGitHubManagerModal();
+        const token = window.currentUserToken || '';
+        const tokenQuery = token ? `?token=${encodeURIComponent(token)}` : '';
+        if (folder === 'pending') {
+            window.location.href = `${getBaseUrl()}/sign/${encodeURIComponent(filename)}${tokenQuery}`;
+        }
+    } catch (e) {
+        alert(`Error: ${e.message}`);
     }
 }
 
