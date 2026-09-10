@@ -103,10 +103,11 @@ DEFAULT_CONFIG = {
             "timestamp_fontsize": 7.5
         }
     },
+    "secret_key": "3e365053355f0155a46ec9106f57e7ad6b3cdc4cde4dcaa893571b43af7b5e39",
     "auto_archive_pending": False,
     "github_repo": "",
     "github_token": "",
-    "github_branch": "main",
+    "github_branch": "data",
     "auto_delete_github_pending": False,
     "auto_upload_github_signed": True
 }
@@ -154,6 +155,10 @@ def get_current_user():
     2. Authorization header (Bearer <token>)
     3. Query parameter ?token=<token>
     """
+    # Ensure users are restored if database is fresh/empty (e.g. after container restart)
+    if db.count_users() == 0:
+        sync_users_from_cloud()
+
     # 1. Query parameter: ?token=... (takes precedence so scanning a personal QR code switches session)
     token = request.args.get('token', '').strip()
     if token:
@@ -361,7 +366,7 @@ def get_github_config(user=None):
     cfg = get_user_config(user)
     raw_repo = os.environ.get('GITHUB_REPO') or cfg.get('github_repo', '')
     token = os.environ.get('GITHUB_TOKEN') or cfg.get('github_token', '')
-    branch = os.environ.get('GITHUB_BRANCH') or cfg.get('github_branch', 'main')
+    branch = os.environ.get('GITHUB_BRANCH') or cfg.get('github_branch', 'data')
     auto_delete = cfg.get('auto_delete_github_pending', False)
     auto_upload = cfg.get('auto_upload_github_signed', True)
 
@@ -370,10 +375,15 @@ def get_github_config(user=None):
         repo = re.sub(r'^https?://[^/]+/', '', repo)
     repo = re.sub(r'\.git$', '', repo).strip('/')
 
+    clean_branch = branch.strip() or "data"
+    # Never write documents/backups to 'main' branch to prevent Render build/restart loops
+    if clean_branch == 'main':
+        clean_branch = 'data'
+
     return {
         "repo": repo,
         "token": token.strip(),
-        "branch": branch.strip() or "main",
+        "branch": clean_branch,
         "auto_delete_github_pending": auto_delete,
         "auto_upload_github_signed": auto_upload,
         "is_configured": bool(repo and token)
@@ -383,16 +393,17 @@ def github_api_request(method, endpoint, data=None, token=None, user=None):
     """Execute a GitHub REST API v3 request."""
     gh_cfg = get_github_config(user)
     auth_token = token or gh_cfg['token']
-    if not auth_token:
+    if not auth_token and method.upper() != 'GET':
         raise ValueError("GitHub Personal Access Token is not configured.")
 
     url = f"https://api.github.com/{endpoint.lstrip('/')}"
     headers = {
-        "Authorization": f"Bearer {auth_token}",
         "Accept": "application/vnd.github+json",
         "User-Agent": "IT-Signer/2.0",
         "X-GitHub-Api-Version": "2022-11-28"
     }
+    if auth_token:
+        headers["Authorization"] = f"Bearer {auth_token}"
 
     body_bytes = None
     if data is not None:
@@ -583,37 +594,41 @@ def ensure_file_on_disk(folder_type, filename, user=None):
 
     # Fetch from GitHub repository if configured
     gh_cfg = get_github_config(user)
-    if gh_cfg.get('is_configured'):
+    if gh_cfg.get('repo'):
         cand_paths = [
             f"{folder_type}/{clean_name}",
             f"{config.get('pending_dir' if folder_type == 'pending' else 'signed_dir')}/{clean_name}".replace('\\', '/').strip('/')
         ]
         cand_paths = list(dict.fromkeys(cand_paths))
+        branches = [gh_cfg['branch']]
+        if 'main' not in branches:
+            branches.append('main')
 
-        for repo_path in cand_paths:
-            try:
-                encoded = quote_github_path(repo_path)
-                query = urllib.parse.urlencode({'ref': gh_cfg['branch']})
-                item = github_api_request("GET", f"repos/{gh_cfg['repo']}/contents/{encoded}?{query}", user=user)
-                file_bytes = None
-                if isinstance(item, dict):
-                    if item.get('content'):
-                        file_bytes = base64.b64decode(item['content'])
-                    elif item.get('download_url'):
-                        req = urllib.request.Request(item['download_url'], headers={
-                            "Authorization": f"Bearer {gh_cfg['token']}",
-                            "User-Agent": "IT-Signer/2.0"
-                        })
-                        with urllib.request.urlopen(req, timeout=20) as resp:
-                            file_bytes = resp.read()
+        for b_name in branches:
+            for repo_path in cand_paths:
+                try:
+                    encoded = quote_github_path(repo_path)
+                    query = urllib.parse.urlencode({'ref': b_name})
+                    item = github_api_request("GET", f"repos/{gh_cfg['repo']}/contents/{encoded}?{query}", user=user)
+                    file_bytes = None
+                    if isinstance(item, dict):
+                        if item.get('content'):
+                            file_bytes = base64.b64decode(item['content'])
+                        elif item.get('download_url'):
+                            req_headers = {"User-Agent": "IT-Signer/2.0"}
+                            if gh_cfg.get('token'):
+                                req_headers["Authorization"] = f"Bearer {gh_cfg['token']}"
+                            req = urllib.request.Request(item['download_url'], headers=req_headers)
+                            with urllib.request.urlopen(req, timeout=20) as resp:
+                                file_bytes = resp.read()
 
-                if file_bytes:
-                    target_dir.mkdir(parents=True, exist_ok=True)
-                    local_path.write_bytes(file_bytes)
-                    print(f"[CLOUD-FALLBACK] Restored '{clean_name}' from GitHub ({repo_path}) to local disk.")
-                    return local_path
-            except Exception:
-                pass
+                    if file_bytes:
+                        target_dir.mkdir(parents=True, exist_ok=True)
+                        local_path.write_bytes(file_bytes)
+                        print(f"[CLOUD-FALLBACK] Restored '{clean_name}' from GitHub ({b_name}:{repo_path}) to local disk.")
+                        return local_path
+                except Exception:
+                    pass
 
     return None
 
@@ -682,16 +697,26 @@ def sync_users_from_cloud():
     # Try restoring from GitHub repository
     try:
         gh = get_github_config()
-        if gh.get('is_configured'):
-            encoded = quote_github_path('users_backup.json')
-            res = github_api_request("GET", f"repos/{gh['repo']}/contents/{encoded}?ref={gh['branch']}")
-            if res and isinstance(res, dict) and res.get('content'):
-                content_bytes = base64.b64decode(res['content'])
-                users_data = json.loads(content_bytes.decode('utf-8'))
-                count = db.import_users_data(users_data)
-                if count > 0:
-                    db.save_users_backup()
-                    print(f"[AUTH] Restored {count} user(s) from GitHub cloud backup.")
+        repo = gh.get('repo') or 'jacobwakeup21/it-signer'
+        branch = gh.get('branch') or 'data'
+        encoded = quote_github_path('users_backup.json')
+        branches_to_try = [branch]
+        if 'main' not in branches_to_try:
+            branches_to_try.append('main')
+
+        for b in branches_to_try:
+            try:
+                res = github_api_request("GET", f"repos/{repo}/contents/{encoded}?ref={b}")
+                if res and isinstance(res, dict) and res.get('content'):
+                    content_bytes = base64.b64decode(res['content'])
+                    users_data = json.loads(content_bytes.decode('utf-8'))
+                    count = db.import_users_data(users_data)
+                    if count > 0:
+                        db.save_users_backup()
+                        print(f"[AUTH] Restored {count} user(s) from GitHub cloud backup ({b}).")
+                        return
+            except Exception:
+                pass
     except Exception as e:
         print(f"[AUTH] Cloud user sync notice: {e}")
 
