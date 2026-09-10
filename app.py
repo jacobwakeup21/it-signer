@@ -477,35 +477,42 @@ def quote_github_path(path_str):
     return '/'.join(urllib.parse.quote(p, safe='') for p in parts)
 
 def github_list_folder_files(folder='pending', user=None):
-    """List all files in GitHub repo's specified directory."""
+    """List all files in GitHub repo's specified directory across configured branch and main."""
     gh = get_github_config(user)
-    if not gh['is_configured']:
+    if not gh.get('repo'):
         return []
-    try:
-        clean_folder = folder.strip().strip('/')
-        query = urllib.parse.urlencode({'ref': gh['branch']})
-        endpoint = f"repos/{gh['repo']}/contents/{clean_folder}?{query}"
-        items = github_api_request("GET", endpoint, user=user)
-        if isinstance(items, list):
-            files = []
-            for item in items:
-                if item.get('type') == 'file' and item.get('name') != '.gitkeep':
-                    files.append({
-                        "name": item.get('name'),
-                        "path": item.get('path'),
-                        "sha": item.get('sha'),
-                        "size": item.get('size', 0),
-                        "size_formatted": format_file_size(item.get('size', 0)),
-                        "download_url": item.get('download_url'),
-                        "html_url": item.get('html_url')
-                    })
-            return files
-        return []
-    except Exception as e:
-        if "404" in str(e):
-            return []
-        print(f"Error listing GitHub {folder} files: {e}")
-        return []
+
+    clean_folder = folder.strip().strip('/')
+    branches = [gh.get('branch', 'data')]
+    if 'main' not in branches:
+        branches.append('main')
+
+    files_by_name = {}
+    for b_name in branches:
+        try:
+            query = urllib.parse.urlencode({'ref': b_name})
+            endpoint = f"repos/{gh['repo']}/contents/{clean_folder}?{query}"
+            items = github_api_request("GET", endpoint, user=user)
+            if isinstance(items, list):
+                for item in items:
+                    if item.get('type') == 'file' and item.get('name') != '.gitkeep':
+                        name = item.get('name')
+                        if name not in files_by_name:
+                            files_by_name[name] = {
+                                "name": name,
+                                "path": item.get('path'),
+                                "sha": item.get('sha'),
+                                "size": item.get('size', 0),
+                                "size_formatted": format_file_size(item.get('size', 0)),
+                                "download_url": item.get('download_url'),
+                                "html_url": item.get('html_url'),
+                                "branch": b_name
+                            }
+        except Exception as e:
+            if "404" not in str(e):
+                print(f"Notice: listing GitHub {folder} files on branch {b_name}: {e}")
+
+    return list(files_by_name.values())
 
 def github_list_pending_files(user=None):
     return github_list_folder_files('pending', user=user)
@@ -591,7 +598,13 @@ def ensure_file_on_disk(folder_type, filename, user=None):
     # Check root folder (BASE_DIR / folder_type / clean_name)
     base_fallback = BASE_DIR / folder_type / clean_name
     if base_fallback.exists():
-        return base_fallback
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+            import shutil
+            shutil.copy2(str(base_fallback), str(local_path))
+            return local_path
+        except Exception:
+            return base_fallback
 
     # Fetch from GitHub repository if configured
     gh_cfg = get_github_config(user)
@@ -601,7 +614,7 @@ def ensure_file_on_disk(folder_type, filename, user=None):
             f"{config.get('pending_dir' if folder_type == 'pending' else 'signed_dir')}/{clean_name}".replace('\\', '/').strip('/')
         ]
         cand_paths = list(dict.fromkeys(cand_paths))
-        branches = [gh_cfg['branch']]
+        branches = [gh_cfg.get('branch', 'data')]
         if 'main' not in branches:
             branches.append('main')
 
@@ -638,7 +651,7 @@ _last_github_sync = {}
 def sync_from_github_if_needed(user=None, force=False):
     """
     Synchronize files from GitHub repository to local disk if local folder is empty
-    (e.g. after container spin-down / redeploy on Render) or if periodically due.
+    or missing files from GitHub, or if periodically due / forced.
     """
     now = datetime.now(timezone.utc).timestamp()
     active_g_user = getattr(g, 'user', None) if (has_request_context() and hasattr(g, 'user')) else None
@@ -652,36 +665,40 @@ def sync_from_github_if_needed(user=None, force=False):
 
     has_pending = any(p for p in pending_dir.glob('*.pdf') if not p.name.startswith('.')) if pending_dir.exists() else False
     has_signed = any(p for p in signed_dir.glob('*.pdf') if not p.name.startswith('.')) if signed_dir.exists() else False
-    is_empty = not has_pending and not has_signed
 
-    if not force and not is_empty and (now - last_time < 60):
+    need_pending_sync = force or (not has_pending) or (now - last_time >= 30)
+    need_signed_sync = force or (not has_signed) or (now - last_time >= 30)
+
+    if not need_pending_sync and not need_signed_sync:
         return
 
     gh_cfg = get_github_config(u)
-    if not gh_cfg.get('is_configured'):
+    if not gh_cfg.get('repo'):
         return
 
     _last_github_sync[username] = now
 
-    try:
-        gh_pending = github_list_pending_files(user=u)
-        for gf in gh_pending:
-            fname = gf.get('name', '')
-            if fname.lower().endswith('.pdf') and not fname.startswith('.'):
-                if not (pending_dir / fname).exists():
-                    ensure_file_on_disk('pending', fname, user=u)
-    except Exception as e:
-        print(f"Notice: sync pending from GitHub: {e}")
+    if need_pending_sync:
+        try:
+            gh_pending = github_list_pending_files(user=u)
+            for gf in gh_pending:
+                fname = gf.get('name', '')
+                if fname.lower().endswith('.pdf') and not fname.startswith('.'):
+                    if not (pending_dir / fname).exists():
+                        ensure_file_on_disk('pending', fname, user=u)
+        except Exception as e:
+            print(f"Notice: sync pending from GitHub: {e}")
 
-    try:
-        gh_signed = github_list_signed_files(user=u)
-        for gf in gh_signed:
-            fname = gf.get('name', '')
-            if fname.lower().endswith('.pdf') and not fname.startswith('.'):
-                if not (signed_dir / fname).exists():
-                    ensure_file_on_disk('signed', fname, user=u)
-    except Exception as e:
-        print(f"Notice: sync signed from GitHub: {e}")
+    if need_signed_sync:
+        try:
+            gh_signed = github_list_signed_files(user=u)
+            for gf in gh_signed:
+                fname = gf.get('name', '')
+                if fname.lower().endswith('.pdf') and not fname.startswith('.'):
+                    if not (signed_dir / fname).exists():
+                        ensure_file_on_disk('signed', fname, user=u)
+        except Exception as e:
+            print(f"Notice: sync signed from GitHub: {e}")
 
 def sync_users_from_cloud():
     """If DB has 0 users, restore from local backup or GitHub repository."""
@@ -1040,6 +1057,33 @@ def api_documents():
     config = get_user_config(g.user)
     pending_dir = get_resolved_path(config.get('pending_dir'))
     signed_dir = get_resolved_path(config.get('signed_dir'))
+
+    # Adopt any root pending/signed files into user's folder if placed at repository root
+    root_pending = BASE_DIR / 'pending'
+    if root_pending.exists() and root_pending.resolve() != pending_dir.resolve():
+        for p in root_pending.iterdir():
+            if p.is_file() and p.suffix.lower() == '.pdf' and not p.name.startswith('.'):
+                dest = pending_dir / p.name
+                if not dest.exists():
+                    try:
+                        import shutil
+                        pending_dir.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(str(p), str(dest))
+                    except Exception:
+                        pass
+
+    root_signed = BASE_DIR / 'signed'
+    if root_signed.exists() and root_signed.resolve() != signed_dir.resolve():
+        for p in root_signed.iterdir():
+            if p.is_file() and p.suffix.lower() == '.pdf' and not p.name.startswith('.'):
+                dest = signed_dir / p.name
+                if not dest.exists():
+                    try:
+                        import shutil
+                        signed_dir.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(str(p), str(dest))
+                    except Exception:
+                        pass
     
     def scan_dir(directory, is_pending=True):
         files_data = []
@@ -1525,16 +1569,26 @@ def api_github_test():
     res = github_test_connection(repo, token, user=g.user)
     return jsonify(res)
 
+@app.route('/api/github/sync-now', methods=['POST'])
+@login_required
+def api_github_sync_now():
+    """Immediately force sync of all pending and signed documents from GitHub to local disk."""
+    try:
+        sync_from_github_if_needed(g.user, force=True)
+        return jsonify({"success": True, "message": "Successfully synchronized documents from GitHub."})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
 @app.route('/api/github/pending')
 @login_required
 def api_github_pending():
     """List all files in GitHub repo pending/ folder for current user."""
     gh = get_github_config(g.user)
-    if not gh['is_configured']:
-        return jsonify({"success": False, "error": "GitHub is not configured with repository & token.", "files": []})
+    if not gh.get('repo'):
+        return jsonify({"success": False, "error": "GitHub repository is not configured.", "files": []})
     try:
         files = github_list_pending_files(user=g.user)
-        return jsonify({"success": True, "files": files, "repo": gh['repo'], "branch": gh['branch']})
+        return jsonify({"success": True, "files": files, "repo": gh['repo'], "branch": gh['branch'], "count": len(files)})
     except Exception as e:
         return jsonify({"success": False, "error": str(e), "files": []}), 500
 
@@ -1587,11 +1641,11 @@ def api_github_clear_pending():
 def api_github_signed():
     """List all files in GitHub repo signed/ folder for current user."""
     gh = get_github_config(g.user)
-    if not gh['is_configured']:
-        return jsonify({"success": False, "error": "GitHub is not configured with repository & token.", "files": []})
+    if not gh.get('repo'):
+        return jsonify({"success": False, "error": "GitHub repository is not configured.", "files": []})
     try:
         files = github_list_signed_files(user=g.user)
-        return jsonify({"success": True, "files": files, "repo": gh['repo'], "branch": gh['branch']})
+        return jsonify({"success": True, "files": files, "repo": gh['repo'], "branch": gh['branch'], "count": len(files)})
     except Exception as e:
         return jsonify({"success": False, "error": str(e), "files": []}), 500
 
@@ -1724,6 +1778,14 @@ def api_config():
         current['username'] = g.user['username']
         current['display_name'] = g.user['display_name']
         current['quick_access_token'] = g.user['quick_access_token']
+
+        # If GitHub credentials were provided or restored, trigger sync immediately
+        if new_config.get('github_token') or new_config.get('github_repo'):
+            try:
+                sync_from_github_if_needed(g.user, force=True)
+            except Exception as se:
+                print(f"Notice: initial sync after config update: {se}")
+
         return jsonify({"success": True, "config": current})
 
     cfg = get_user_config(g.user)
