@@ -8,6 +8,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / 'it_signer.db'
+BACKUP_PATH = BASE_DIR / 'users_backup.json'
 
 def get_db_connection():
     """Create and return a database connection configured with Row factory and WAL mode."""
@@ -18,7 +19,7 @@ def get_db_connection():
     return conn
 
 def init_db():
-    """Initialize SQLite database tables and indexes."""
+    """Initialize SQLite database tables, indexes, and restore from backup if empty."""
     conn = get_db_connection()
     try:
         with conn:
@@ -38,6 +39,13 @@ def init_db():
             conn.execute("CREATE INDEX IF NOT EXISTS idx_users_token ON users(quick_access_token);")
     finally:
         conn.close()
+
+    # Automatically restore users from persistent backup if database has 0 users
+    try:
+        if count_users() == 0:
+            restore_users_from_backup()
+    except Exception:
+        pass
 
 def parse_user_row(row):
     """Convert a sqlite3.Row into a Python dictionary with parsed settings."""
@@ -93,7 +101,9 @@ def create_user(username, password, display_name=None, initial_settings=None):
             user_id = cursor.lastrowid
             
             cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
-            return parse_user_row(cursor.fetchone())
+            user_row = parse_user_row(cursor.fetchone())
+            save_users_backup()
+            return user_row
     except sqlite3.IntegrityError:
         raise ValueError(f"Username '{clean_username}' is already taken.")
     finally:
@@ -196,6 +206,7 @@ def update_user_settings(user_id, new_settings):
                 "UPDATE users SET settings = ? WHERE id = ?", 
                 (json.dumps(current_settings, indent=2), user_id)
             )
+        save_users_backup()
         return True, current_settings
     finally:
         conn.close()
@@ -224,6 +235,7 @@ def update_user_profile(user_id, display_name=None, password=None):
     try:
         with conn:
             conn.execute(sql, params)
+        save_users_backup()
         return True, "Profile updated successfully."
     finally:
         conn.close()
@@ -258,3 +270,81 @@ def list_all_users():
         return [dict(r) for r in cursor.fetchall()]
     finally:
         conn.close()
+
+def export_users_data():
+    """Export all users with password hashes and settings for persistent backup."""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT username, display_name, password_hash, quick_access_token, settings, created_at, last_login FROM users")
+        rows = cursor.fetchall()
+        users_data = []
+        for r in rows:
+            raw_s = r["settings"]
+            parsed_s = json.loads(raw_s) if isinstance(raw_s, str) else (raw_s or {})
+            users_data.append({
+                "username": r["username"],
+                "display_name": r["display_name"],
+                "password_hash": r["password_hash"],
+                "quick_access_token": r["quick_access_token"],
+                "settings": parsed_s,
+                "created_at": r["created_at"],
+                "last_login": r["last_login"]
+            })
+        return users_data
+    finally:
+        conn.close()
+
+def save_users_backup():
+    """Save users to local backup JSON file."""
+    try:
+        users = export_users_data()
+        with open(BACKUP_PATH, 'w', encoding='utf-8') as f:
+            json.dump(users, f, indent=2)
+        return True
+    except Exception as e:
+        print(f"Failed to save users backup: {e}")
+        return False
+
+def import_users_data(users_data):
+    """Import users into database if they do not already exist."""
+    if not users_data or not isinstance(users_data, list):
+        return 0
+    conn = get_db_connection()
+    imported = 0
+    try:
+        with conn:
+            cursor = conn.cursor()
+            for u in users_data:
+                username = (u.get('username') or '').strip()
+                if not username:
+                    continue
+                cursor.execute("SELECT id FROM users WHERE username = ?", (username,))
+                if cursor.fetchone():
+                    continue
+                pw_hash = u.get('password_hash')
+                display_name = u.get('display_name') or username
+                token = u.get('quick_access_token') or secrets.token_urlsafe(24)
+                settings = json.dumps(u.get('settings') or {})
+                created_at = u.get('created_at') or datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                last_login = u.get('last_login')
+                cursor.execute("""
+                    INSERT INTO users (username, display_name, password_hash, quick_access_token, settings, created_at, last_login)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (username, display_name, pw_hash, token, settings, created_at, last_login))
+                imported += 1
+        return imported
+    finally:
+        conn.close()
+
+def restore_users_from_backup():
+    """Restore users from local backup file if database is empty."""
+    if BACKUP_PATH.exists():
+        try:
+            with open(BACKUP_PATH, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            return import_users_data(data)
+        except Exception as e:
+            print(f"Failed to restore users backup: {e}")
+    return 0
+
