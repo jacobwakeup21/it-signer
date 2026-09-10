@@ -29,21 +29,40 @@ app.config['MAX_CONTENT_LENGTH'] = 64 * 1024 * 1024  # 64MB max upload
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = BASE_DIR / 'config.json'
 
-# Persistent Secret Key for session cookies
+# Persistent Secret Key for session cookies (persisted in config.json & .secret_key)
 SECRET_KEY_FILE = BASE_DIR / '.secret_key'
-if not SECRET_KEY_FILE.exists():
+saved_secret = None
+if CONFIG_FILE.exists():
     try:
-        SECRET_KEY_FILE.write_text(secrets.token_hex(32), encoding='utf-8')
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as _f:
+            _cfg_data = json.load(_f)
+            saved_secret = _cfg_data.get('secret_key')
     except Exception:
         pass
 
-if SECRET_KEY_FILE.exists():
+if not saved_secret and SECRET_KEY_FILE.exists():
     try:
-        app.secret_key = os.environ.get('SECRET_KEY') or SECRET_KEY_FILE.read_text(encoding='utf-8').strip()
+        saved_secret = SECRET_KEY_FILE.read_text(encoding='utf-8').strip()
     except Exception:
-        app.secret_key = os.environ.get('SECRET_KEY') or secrets.token_hex(32)
-else:
-    app.secret_key = os.environ.get('SECRET_KEY') or secrets.token_hex(32)
+        pass
+
+if not saved_secret:
+    saved_secret = secrets.token_hex(32)
+    try:
+        SECRET_KEY_FILE.write_text(saved_secret, encoding='utf-8')
+    except Exception:
+        pass
+    if CONFIG_FILE.exists():
+        try:
+            with open(CONFIG_FILE, 'r', encoding='utf-8') as _f:
+                _cfg_data = json.load(_f)
+            _cfg_data['secret_key'] = saved_secret
+            with open(CONFIG_FILE, 'w', encoding='utf-8') as _f:
+                json.dump(_cfg_data, _f, indent=4)
+        except Exception:
+            pass
+
+app.secret_key = os.environ.get('SECRET_KEY') or saved_secret
 
 app.config['SESSION_COOKIE_NAME'] = 'it_signer_session'
 app.config['SESSION_COOKIE_HTTPONLY'] = True
@@ -535,6 +554,48 @@ def github_upload_file(path_in_repo, file_bytes, commit_msg=None, user=None):
 
     return github_api_request("PUT", f"repos/{gh['repo']}/contents/{encoded_path}", data=payload, user=user)
 
+def sync_users_from_cloud():
+    """If DB has 0 users, restore from local backup or GitHub repository."""
+    if db.count_users() > 0:
+        return
+    # Check local backup first
+    try:
+        restored = db.restore_users_from_backup()
+        if restored > 0:
+            print(f"[AUTH] Restored {restored} user(s) from local backup.")
+            return
+    except Exception as e:
+        print(f"[AUTH] Local backup restore error: {e}")
+
+    # Try restoring from GitHub repository
+    try:
+        gh = get_github_config()
+        if gh.get('is_configured'):
+            encoded = quote_github_path('users_backup.json')
+            res = github_api_request("GET", f"repos/{gh['repo']}/contents/{encoded}?ref={gh['branch']}")
+            if res and isinstance(res, dict) and res.get('content'):
+                content_bytes = base64.b64decode(res['content'])
+                users_data = json.loads(content_bytes.decode('utf-8'))
+                count = db.import_users_data(users_data)
+                if count > 0:
+                    db.save_users_backup()
+                    print(f"[AUTH] Restored {count} user(s) from GitHub cloud backup.")
+    except Exception as e:
+        print(f"[AUTH] Cloud user sync notice: {e}")
+
+def sync_users_to_cloud(user=None):
+    """Sync user accounts to GitHub repo so accounts persist on ephemeral cloud services like Render."""
+    try:
+        gh = get_github_config(user)
+        if gh.get('is_configured'):
+            users = db.export_users_data()
+            if not users:
+                return
+            content_bytes = json.dumps(users, indent=2).encode('utf-8')
+            github_upload_file('users_backup.json', content_bytes, commit_msg="Update user accounts backup via IT Signer", user=user)
+    except Exception as e:
+        print(f"[AUTH] Cloud user backup notice: {e}")
+
 def get_pdf_metadata(filepath):
     """Extract page count from PDF using PyMuPDF."""
     try:
@@ -654,14 +715,18 @@ def login_page():
 
     error = None
     message = request.args.get('message') or None
-    active_tab = 'login'
     total_users = db.count_users()
+    if total_users == 0:
+        sync_users_from_cloud()
+        total_users = db.count_users()
+
+    active_tab = request.form.get('action') or ('register' if total_users == 0 else 'login')
 
     if request.method == 'POST':
         action = request.form.get('action', 'login')
         username = request.form.get('username', '').strip()
         password = request.form.get('password', '').strip()
-        remember = bool(request.form.get('remember'))
+        remember = bool(request.form.get('remember', '1'))
 
         if action == 'register':
             active_tab = 'register'
@@ -692,14 +757,20 @@ def login_page():
                         get_resolved_path(f"signed/{clean_username}")
                         get_resolved_path(f"pending/{clean_username}/.archive")
 
+                        # Sync backup to cloud repository for persistence across Render restarts
+                        try:
+                            sync_users_to_cloud(user)
+                        except Exception:
+                            pass
+
                         return redirect(next_url)
                 except Exception as e:
                     error = str(e)
         else: # login
             user = db.authenticate_user(username, password)
             if user:
-                if remember:
-                    session.permanent = True
+                # Permanent session (30 days) so closing browser does not log out
+                session.permanent = True
                 session['user_id'] = user['id']
                 session['username'] = user['username']
                 session['display_name'] = user['display_name']
@@ -1528,6 +1599,10 @@ def api_update_profile():
     if ok:
         if display_name and display_name.strip():
             session['display_name'] = display_name.strip()
+        try:
+            sync_users_to_cloud(g.user)
+        except Exception:
+            pass
         return jsonify({"success": True, "message": msg})
     return jsonify({"success": False, "error": msg}), 400
 
