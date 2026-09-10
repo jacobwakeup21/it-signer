@@ -1,0 +1,15 @@
+[
+  {
+    "username": "jakub.kuchar",
+    "display_name": "Jakub Kucha\u0159",
+    "password_hash": "scrypt:32768:8:1$pggPrc2Zve1s80Nh$dc7a679ed38336aa72012ded42135e1b4c51955028a4dd631d12c60d9b73606b7a87040f5dc90cd84ba04ead031338bdbc81388e7e8323734d1fc2ddf470ef89",
+    "quick_access_token": "41wfPiwTdY-bz7JwnLK2VTHZEgzOS9h9",
+    "settings": {
+      "pending_dir": "pending/jakub.kuchar",
+      "signed_dir": "signed/jakub.kuchar",
+      "archive_dir": "pending/jakub.kuchar/.archive"
+    },
+    "created_at": "2026-09-10 09:49:01",
+    "last_login": null
+  }
+]
