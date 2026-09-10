@@ -29,10 +29,11 @@
             "timestamp_fontsize": 7.5
         }
     },
+    "secret_key": "3e365053355f0155a46ec9106f57e7ad6b3cdc4cde4dcaa893571b43af7b5e39",
     "auto_archive_pending": false,
     "github_repo": "jacobwakeup21/it-signer",
     "github_token": "",
-    "github_branch": "main",
+    "github_branch": "data",
     "auto_delete_github_pending": false,
     "auto_upload_github_signed": true
 }
