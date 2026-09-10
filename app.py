@@ -16,7 +16,7 @@ try:
 except ImportError:
     zoneinfo = None
 from pathlib import Path
-from flask import Flask, render_template, request, jsonify, send_file, send_from_directory, session, redirect, url_for, g
+from flask import Flask, render_template, request, jsonify, send_file, send_from_directory, session, redirect, url_for, g, has_request_context
 import pymupdf
 import qrcode
 
@@ -205,7 +205,8 @@ def login_required(f):
 @app.context_processor
 def inject_user_context():
     """Make current_user, logged_in_user, and is_logged_in available in all Jinja templates."""
-    user = getattr(g, 'user', None) or get_current_user()
+    active_user = getattr(g, 'user', None) if (has_request_context() and hasattr(g, 'user')) else None
+    user = active_user or (get_current_user() if has_request_context() else None)
     return {
         'current_user': user,
         'logged_in_user': user,
@@ -220,7 +221,7 @@ def get_user_config(user=None):
     """
     sys_cfg = load_system_config()
     if not user:
-        if hasattr(g, 'user') and g.user:
+        if has_request_context() and hasattr(g, 'user') and g.user:
             user = g.user
         else:
             return sys_cfg
@@ -640,7 +641,8 @@ def sync_from_github_if_needed(user=None, force=False):
     (e.g. after container spin-down / redeploy on Render) or if periodically due.
     """
     now = datetime.now(timezone.utc).timestamp()
-    u = user or (getattr(g, 'user', None) if hasattr(g, 'user') else None) or get_current_user()
+    active_g_user = getattr(g, 'user', None) if (has_request_context() and hasattr(g, 'user')) else None
+    u = user or active_g_user or (get_current_user() if has_request_context() else None)
     username = u.get('username', 'default') if isinstance(u, dict) else 'default'
     last_time = _last_github_sync.get(username, 0)
 
