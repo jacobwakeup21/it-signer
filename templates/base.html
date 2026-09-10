@@ -53,23 +53,49 @@
 <body class="bg-[#070c18] text-slate-100 min-h-screen flex flex-col font-sans antialiased selection:bg-cyan-500 selection:text-slate-950 cyber-grid">
     <!-- Navigation / Header -->
     <header class="bg-[#0b1329]/90 backdrop-blur-xl border-b border-cyan-500/20 sticky top-0 z-40 pt-3.5 sm:pt-0 shadow-[0_4px_30px_-5px_rgba(6,182,212,0.15)]" style="padding-top: max(0.85rem, env(safe-area-inset-top));">
-        <div class="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 min-h-[4.5rem] sm:min-h-[5.5rem] md:min-h-[6rem] py-2 sm:py-2.5 flex items-center justify-between gap-4">
-            <a href="/" class="flex items-center group min-w-0 py-1" title="IT Signer — Home">
+        <div class="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 min-h-[4.5rem] sm:min-h-[5.5rem] md:min-h-[6rem] py-2 sm:py-2.5 flex items-center justify-between gap-2 sm:gap-4">
+            <a href="/" class="flex items-center group min-w-0 py-1 flex-shrink-0" title="IT Signer — Home">
                 <img src="{{ url_for('static', filename='img/logo-wide.png') }}" 
                      alt="IT Signer — Mobile & Desktop Digital Signature Hub" 
-                     class="h-12 sm:h-16 md:h-20 lg:h-[5.25rem] w-auto max-w-[65vw] sm:max-w-none object-contain transition-all duration-200 group-hover:scale-[1.02] drop-shadow-[0_0_15px_rgba(6,182,212,0.2)]">
+                     class="h-9 sm:h-16 md:h-20 lg:h-[5.25rem] w-auto max-w-[130px] sm:max-w-none object-contain transition-all duration-200 group-hover:scale-[1.02] drop-shadow-[0_0_15px_rgba(6,182,212,0.2)]">
             </a>
 
-            <nav class="flex items-center space-x-1.5 sm:space-x-2 flex-shrink-0">
-                <a href="/" class="px-3 py-1.5 rounded-xl text-xs sm:text-sm font-semibold text-slate-300 hover:text-white hover:bg-cyan-500/10 hover:border-cyan-500/30 border border-transparent transition flex items-center gap-1.5">
+            <nav class="flex items-center space-x-1 sm:space-x-2 flex-shrink-0">
+                <a href="/" class="px-2.5 sm:px-3 py-1.5 rounded-xl text-xs sm:text-sm font-semibold text-slate-300 hover:text-white hover:bg-cyan-500/10 hover:border-cyan-500/30 border border-transparent transition flex items-center gap-1.5">
                     <i data-lucide="monitor" class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-cyan-400"></i>
                     <span class="hidden sm:inline">Desktop Hub</span>
                 </a>
-                <a href="/mobile" class="px-3 py-1.5 rounded-xl text-xs sm:text-sm font-semibold bg-gradient-to-r from-cyan-500/20 via-sky-500/20 to-indigo-500/20 text-cyan-300 border border-cyan-400/40 hover:border-cyan-300 hover:shadow-cyan-500/30 transition flex items-center gap-1.5 shadow-[0_0_15px_rgba(6,182,212,0.15)]">
+                <a href="/mobile" class="px-2.5 sm:px-3 py-1.5 rounded-xl text-xs sm:text-sm font-semibold bg-gradient-to-r from-cyan-500/20 via-sky-500/20 to-indigo-500/20 text-cyan-300 border border-cyan-400/40 hover:border-cyan-300 hover:shadow-cyan-500/30 transition flex items-center gap-1.5 shadow-[0_0_15px_rgba(6,182,212,0.15)]">
                     <i data-lucide="smartphone" class="w-3.5 h-3.5 sm:w-4 sm:h-4 text-cyan-300"></i>
                     <span class="text-xs sm:text-sm font-bold">Mobile Sign</span>
                 </a>
                 {% block nav_extra %}{% endblock %}
+
+                {% if current_user or logged_in_user or session.get('username') %}
+                {% set u_obj = current_user or logged_in_user %}
+                {% set u_name = (u_obj.username if u_obj else session.get('username')) %}
+                {% set u_disp = ((u_obj.display_name if u_obj else session.get('display_name')) or u_name) %}
+                <div class="flex items-center gap-1.5 sm:gap-2 pl-1.5 sm:pl-2 border-l border-cyan-500/30">
+                    <div class="px-2 sm:px-3 py-1.5 rounded-xl text-xs font-semibold bg-cyan-500/15 text-cyan-200 border border-cyan-400/40 flex items-center gap-1 sm:gap-2 shadow-sm" title="Signed in as @{{ u_name }}">
+                        <span class="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_#34d399] animate-pulse"></span>
+                        <i data-lucide="user" class="w-3.5 h-3.5 text-cyan-400 hidden xs:inline"></i>
+                        <span class="font-bold text-white max-w-[70px] sm:max-w-[160px] truncate">{{ u_disp }}</span>
+                    </div>
+                    <a href="/logout" 
+                       class="px-2 sm:px-3 py-1.5 rounded-xl text-xs font-bold text-rose-300 hover:text-white bg-rose-500/15 hover:bg-rose-500/30 border border-rose-500/40 hover:border-rose-400 transition flex items-center gap-1 shadow-sm active:scale-95" 
+                       title="Log Out of this account">
+                        <i data-lucide="log-out" class="w-3.5 h-3.5 text-rose-400"></i>
+                        <span class="inline">Log Out</span>
+                    </a>
+                </div>
+                {% elif request.path != '/login' %}
+                <div class="pl-2 border-l border-cyan-500/30">
+                    <a href="/login" class="px-3 py-1.5 rounded-xl text-xs sm:text-sm font-bold text-cyan-300 bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-400/40 transition flex items-center gap-1.5 shadow-sm">
+                        <i data-lucide="log-in" class="w-3.5 h-3.5"></i>
+                        <span>Sign In</span>
+                    </a>
+                </div>
+                {% endif %}
             </nav>
         </div>
     </header>
