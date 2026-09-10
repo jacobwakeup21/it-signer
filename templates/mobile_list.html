@@ -4,6 +4,28 @@
 
 {% block content %}
 <div class="max-w-xl mx-auto space-y-4">
+    <!-- User Workspace Header -->
+    <div class="flex items-center justify-between bg-[#0b1329]/90 border border-cyan-500/30 rounded-2xl px-4 py-3 shadow-lg shadow-cyan-950/30">
+        <div class="flex items-center gap-2.5 text-xs min-w-0">
+            <div class="w-7 h-7 rounded-xl bg-gradient-to-tr from-cyan-600 to-sky-400 flex items-center justify-center text-white flex-shrink-0 shadow-sm">
+                <i data-lucide="user" class="w-3.5 h-3.5"></i>
+            </div>
+            <div class="min-w-0">
+                <div class="flex items-center gap-1.5">
+                    <span class="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_6px_#34d399] animate-pulse flex-shrink-0"></span>
+                    <span class="text-white font-bold truncate">{{ (user.display_name if user else current_user.display_name) or session.get('display_name') or session.get('username') }}</span>
+                </div>
+                <span class="text-[10px] text-slate-400 font-mono block truncate">@{{ (user.username if user else current_user.username) or session.get('username') }} • Private Workspace</span>
+            </div>
+        </div>
+        <a href="/logout" 
+           class="px-3 py-1.5 rounded-xl text-xs font-bold text-rose-300 hover:text-white bg-rose-500/15 hover:bg-rose-500/30 border border-rose-500/40 hover:border-rose-400 transition flex items-center gap-1.5 shadow-sm active:scale-95 flex-shrink-0 ml-2"
+           title="Log Out or Switch Account">
+            <i data-lucide="log-out" class="w-3.5 h-3.5 text-rose-400"></i>
+            <span>Log Out</span>
+        </a>
+    </div>
+
     <!-- Search input -->
     <div class="relative">
         <i data-lucide="search" class="w-4 h-4 text-cyan-400 absolute left-3 top-1/2 -translate-y-1/2"></i>
