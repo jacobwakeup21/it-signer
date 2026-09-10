@@ -204,7 +204,7 @@ function renderSigned(files) {
                 </div>
             </div>
             <div class="flex items-center gap-1.5">
-                <a href="${file.download_url}" target="_blank" class="p-2 bg-[#101c3d] hover:bg-[#182b5c] text-cyan-300 border border-cyan-500/30 rounded-lg text-xs font-medium flex items-center shadow" title="Download">
+                <a href="${file.download_url}" download="${file.name}" target="_blank" class="p-2 bg-[#101c3d] hover:bg-[#182b5c] text-cyan-300 border border-cyan-500/30 rounded-lg text-xs font-medium flex items-center shadow" title="Download">
                     <i data-lucide="download" class="w-3.5 h-3.5"></i>
                 </a>
                 <button onclick="deleteMobileDoc('signed', '${file.name}')" class="p-2 bg-rose-600/20 hover:bg-rose-600/40 text-rose-300 border border-rose-500/30 rounded-lg text-xs font-medium flex items-center" title="Delete">
