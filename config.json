@@ -30,7 +30,7 @@
         }
     },
     "auto_archive_pending": true,
-    "github_repo": "",
+    "github_repo": "jacobwakeup21/it-signer",
     "github_token": "",
     "github_branch": "main",
     "auto_delete_github_pending": true,
