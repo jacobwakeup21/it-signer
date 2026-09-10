@@ -1,12 +1,21 @@
 # Handover PDF Documents (Prevent automatic loading/bundling on GitHub)
 pending/*.pdf
+pending/*/*.pdf
 pending/.archive/
+pending/*/.archive/
 signed/*.pdf
+signed/*/*.pdf
 !pending/.gitkeep
 !signed/.gitkeep
 
 # Samples
 samples/
+
+# Database & Secret keys
+*.db
+*.sqlite
+*.sqlite3
+.secret_key
 
 # Python cache & virtual environments
 __pycache__/
