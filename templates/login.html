@@ -48,26 +48,26 @@
 
             <!-- Tabs: Sign In / Create Account -->
             <div class="flex bg-[#070c18] p-1 rounded-2xl border border-cyan-500/25 mb-6">
-                <button type="button" id="tabLoginBtn" onclick="switchAuthTab('login')" class="flex-1 py-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 {% if active_tab != 'register' %}bg-gradient-to-r from-cyan-600 via-sky-600 to-blue-600 text-white shadow-lg shadow-cyan-600/30{% else %}text-slate-400 hover:text-white{% endif %}">
+                <button type="button" id="tabLoginBtn" onclick="switchAuthTab('login')" class="flex-1 py-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 {% if active_tab == 'login' %}bg-gradient-to-r from-cyan-600 via-sky-600 to-blue-600 text-white shadow-lg shadow-cyan-600/30{% else %}text-slate-400 hover:text-white{% endif %}">
                     <i data-lucide="log-in" class="w-3.5 h-3.5"></i>
                     Sign In
                 </button>
-                <button type="button" id="tabRegisterBtn" onclick="switchAuthTab('register')" class="flex-1 py-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 {% if active_tab == 'register' or total_users == 0 %}bg-gradient-to-r from-cyan-600 via-sky-600 to-blue-600 text-white shadow-lg shadow-cyan-600/30{% else %}text-slate-400 hover:text-white{% endif %}">
+                <button type="button" id="tabRegisterBtn" onclick="switchAuthTab('register')" class="flex-1 py-2 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 {% if active_tab == 'register' %}bg-gradient-to-r from-cyan-600 via-sky-600 to-blue-600 text-white shadow-lg shadow-cyan-600/30{% else %}text-slate-400 hover:text-white{% endif %}">
                     <i data-lucide="user-plus" class="w-3.5 h-3.5"></i>
                     Create Account
                 </button>
             </div>
 
             <!-- FORM: Sign In -->
-            <form id="formLogin" method="POST" action="/login" class="space-y-4 {% if active_tab == 'register' or total_users == 0 %}hidden{% endif %}">
+            <form id="formLogin" method="POST" action="/login" class="space-y-4 {% if active_tab != 'login' %}hidden{% endif %}">
                 <input type="hidden" name="action" value="login">
                 <input type="hidden" name="next" value="{{ next_url or '' }}">
 
                 <div>
-                    <label class="block text-xs font-semibold text-slate-300 mb-1.5">Username</label>
+                    <label class="block text-xs font-semibold text-slate-300 mb-1.5" for="login_username">Username</label>
                     <div class="relative">
                         <i data-lucide="user" class="w-4 h-4 text-cyan-400 absolute left-3.5 top-1/2 -translate-y-1/2"></i>
-                        <input type="text" name="username" required autocomplete="username" autofocus
+                        <input type="text" id="login_username" name="username" required autocomplete="username" autofocus
                                placeholder="e.g. jacob or jkuchar" 
                                value="{{ form_username or '' }}"
                                class="w-full bg-[#070c18] border border-cyan-500/30 rounded-xl pl-10 pr-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:ring-2 focus:ring-cyan-400 focus:border-cyan-400 focus:outline-none transition shadow-inner">
@@ -75,10 +75,10 @@
                 </div>
 
                 <div>
-                    <label class="block text-xs font-semibold text-slate-300 mb-1.5">Password</label>
+                    <label class="block text-xs font-semibold text-slate-300 mb-1.5" for="login_password">Password</label>
                     <div class="relative">
                         <i data-lucide="lock" class="w-4 h-4 text-cyan-400 absolute left-3.5 top-1/2 -translate-y-1/2"></i>
-                        <input type="password" name="password" required autocomplete="current-password"
+                        <input type="password" id="login_password" name="password" required autocomplete="current-password"
                                placeholder="Enter your password"
                                class="w-full bg-[#070c18] border border-cyan-500/30 rounded-xl pl-10 pr-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:ring-2 focus:ring-cyan-400 focus:border-cyan-400 focus:outline-none transition shadow-inner">
                     </div>
@@ -86,8 +86,8 @@
 
                 <div class="flex items-center justify-between pt-1">
                     <label class="flex items-center gap-2 cursor-pointer text-xs text-slate-400 select-none">
-                        <input type="checkbox" name="remember" value="1" checked class="rounded bg-[#070c18] border-cyan-500/40 text-cyan-500 focus:ring-cyan-400">
-                        <span>Remember my login</span>
+                        <input type="checkbox" id="login_remember" name="remember" value="1" checked class="rounded bg-[#070c18] border-cyan-500/40 text-cyan-500 focus:ring-cyan-400">
+                        <span>Remember my login (keep signed in)</span>
                     </label>
                 </div>
 
@@ -98,15 +98,15 @@
             </form>
 
             <!-- FORM: Create Account -->
-            <form id="formRegister" method="POST" action="/register" class="space-y-4 {% if active_tab != 'register' and total_users > 0 %}hidden{% endif %}">
+            <form id="formRegister" method="POST" action="/register" class="space-y-4 {% if active_tab != 'register' %}hidden{% endif %}">
                 <input type="hidden" name="action" value="register">
                 <input type="hidden" name="next" value="{{ next_url or '' }}">
 
                 <div>
-                    <label class="block text-xs font-semibold text-slate-300 mb-1.5">Full Name / Display Name</label>
+                    <label class="block text-xs font-semibold text-slate-300 mb-1.5" for="reg_display_name">Full Name / Display Name</label>
                     <div class="relative">
                         <i data-lucide="badge-check" class="w-4 h-4 text-cyan-400 absolute left-3.5 top-1/2 -translate-y-1/2"></i>
-                        <input type="text" name="display_name" required
+                        <input type="text" id="reg_display_name" name="display_name" required autocomplete="name"
                                placeholder="e.g. Jacob Kuchar" 
                                value="{{ form_display_name or '' }}"
                                class="w-full bg-[#070c18] border border-cyan-500/30 rounded-xl pl-10 pr-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:ring-2 focus:ring-cyan-400 focus:border-cyan-400 focus:outline-none transition shadow-inner">
@@ -114,10 +114,10 @@
                 </div>
 
                 <div>
-                    <label class="block text-xs font-semibold text-slate-300 mb-1.5">Username (Login ID)</label>
+                    <label class="block text-xs font-semibold text-slate-300 mb-1.5" for="reg_username">Username (Login ID)</label>
                     <div class="relative">
                         <i data-lucide="user" class="w-4 h-4 text-cyan-400 absolute left-3.5 top-1/2 -translate-y-1/2"></i>
-                        <input type="text" name="username" required autocomplete="username"
+                        <input type="text" id="reg_username" name="username" required autocomplete="username"
                                placeholder="e.g. jacob or jkuchar" 
                                value="{{ form_username or '' }}"
                                class="w-full bg-[#070c18] border border-cyan-500/30 rounded-xl pl-10 pr-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:ring-2 focus:ring-cyan-400 focus:border-cyan-400 focus:outline-none transition shadow-inner">
@@ -125,20 +125,20 @@
                 </div>
 
                 <div>
-                    <label class="block text-xs font-semibold text-slate-300 mb-1.5">Password</label>
+                    <label class="block text-xs font-semibold text-slate-300 mb-1.5" for="reg_password">Password</label>
                     <div class="relative">
                         <i data-lucide="lock" class="w-4 h-4 text-cyan-400 absolute left-3.5 top-1/2 -translate-y-1/2"></i>
-                        <input type="password" name="password" required autocomplete="new-password" minlength="4"
+                        <input type="password" id="reg_password" name="password" required autocomplete="new-password" minlength="4"
                                placeholder="Minimum 4 characters"
                                class="w-full bg-[#070c18] border border-cyan-500/30 rounded-xl pl-10 pr-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:ring-2 focus:ring-cyan-400 focus:border-cyan-400 focus:outline-none transition shadow-inner">
                     </div>
                 </div>
 
                 <div>
-                    <label class="block text-xs font-semibold text-slate-300 mb-1.5">Confirm Password</label>
+                    <label class="block text-xs font-semibold text-slate-300 mb-1.5" for="reg_confirm_password">Confirm Password</label>
                     <div class="relative">
                         <i data-lucide="shield-check" class="w-4 h-4 text-cyan-400 absolute left-3.5 top-1/2 -translate-y-1/2"></i>
-                        <input type="password" name="confirm_password" required autocomplete="new-password" minlength="4"
+                        <input type="password" id="reg_confirm_password" name="confirm_password" required autocomplete="new-password" minlength="4"
                                placeholder="Re-type password"
                                class="w-full bg-[#070c18] border border-cyan-500/30 rounded-xl pl-10 pr-3.5 py-2.5 text-sm text-white placeholder-slate-500 focus:ring-2 focus:ring-cyan-400 focus:border-cyan-400 focus:outline-none transition shadow-inner">
                     </div>
