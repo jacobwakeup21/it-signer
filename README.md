@@ -1,26 +1,26 @@
-# IT Handover PDF Signer
+# IT Signer — Multi-User Digital Signature Hub
 
-A lightweight, enterprise-ready Python Flask web application designed for seamlessly signing IT hardware handover protocols and acknowledgement forms on Android phones and tablets.
+A lightweight, enterprise-ready Python Flask web application designed for seamlessly signing IT hardware handover protocols and acknowledgement forms on Android phones, iPhones, iPads, and PCs, with complete multi-user account isolation.
 
 ---
 
 ## 🌟 Key Features
 
-- 📂 **Dynamic Upload & Local Watching**: Drop PDFs into the desktop dashboard or `./pending` folder on demand.
-- 🐙 **GitHub Pending & Cloud Manager**: Direct integration with GitHub REST API allows viewing and deleting files sitting in the GitHub repository's `pending/` folder with 1-click, plus automatic removal of pending files and auto-uploading of signed documents upon signature completion.
-- 📱 **Mobile Touch & Stylus Signing**: Smooth, responsive vector signature capture powered by `signature_pad.js` with retina/high-DPI canvas scaling and palm/gesture rejection.
-- ⚡ **Instant PyMuPDF Overlay**: Accurately embeds drawn signatures (with optional timestamp & signer metadata) directly onto the target coordinates of the PDF's last page and saves to `./signed`.
-- 📲 **Desktop Dashboard with QR Codes**: Displays automatic LAN IP detection and high-resolution QR codes for immediate one-scan mobile access.
-- 🖼️ **Real-time PDF Thumbnails**: Fast, high-fidelity PDF page rendering via PyMuPDF without requiring external binary tools like Poppler.
-- ⚙️ **Configurable Coordinates & Settings**: Easily customize signature placement coordinates (X, Y, Width, Height) via `config.json` or directly through the web UI.
-- 🌐 **Offline / Intranet Ready**: Bundled vendor scripts allow full operation inside isolated LAN/intranet networks without an active internet connection.
+- 👤 **Multi-User Accounts & Workspaces**: Each technician or employee has their own account and login.
+- 🔒 **Document Privacy & Isolation**: Users only see their own documents in **Pending** and **Completed/Signed** lists. Documents uploaded or signed by one user are completely hidden from other users.
+- 📁 **Custom Per-User Folders (OneDrive Sync)**: Each user can independently configure their own signed destination folder (e.g. `$HOME\OneDrive - Nokian Tyres\Signed Handover Documents` or custom paths) and pending folders.
+- 📱 **One-Scan Quick Mobile Access**: Desktop QR codes automatically embed the user's personal access token, so scanning the QR code with a phone instantly opens that user's pending documents without retyping credentials.
+- ✍️ **Mobile Touch & Stylus Signing**: Smooth, responsive vector signature capture powered by `signature_pad.js` with retina/high-DPI canvas scaling, touch/stylus support, and palm/gesture rejection.
+- ⚡ **Instant PyMuPDF Overlay**: Accurately embeds drawn signatures (single or dual signatures: IT Admin & Recipient) with automatic timestamps and metadata directly onto the PDF.
+- 🔄 **Local PC Folder Sync (`sync_signed_to_pc.ps1`)**: Background PowerShell sync script that automatically downloads only that user's signed documents into their local PC or OneDrive folder using their personal token.
+- 🐙 **GitHub Integration**: Supports syncing signed documents to a GitHub repository and cleaning up pending files upon signature completion.
 
 ---
 
 ## 🚀 Quick Start
 
 ### 1. Launch the Application
-Simply double-click `run.bat` (Windows) or execute via PowerShell:
+Double-click `run.bat` (Windows) or execute in PowerShell:
 ```powershell
 .\start.ps1
 ```
@@ -32,87 +32,47 @@ python app.py
 ```
 
 ### 2. Workflow
-1. **Upload PDF**: Drag and drop any handover PDF into the Desktop Dashboard at `http://localhost:5000` (or place it into `./pending`).
-2. **Scan QR Code**: Scan the QR code displayed on the desktop screen using your phone.
-3. **Sign**: Draw the recipient's and/or IT issuer's signature on the touch screen and tap **"Save & Overlay Signature"**.
-4. **Complete**: 
-   - The signed PDF is instantly saved to `signed/<filename>_signed.pdf` where it stays permanently.
-   - The original pending file is automatically moved out of pending (archived).
-   - If GitHub integration is enabled, the pending file is automatically deleted from GitHub and the signed PDF is uploaded to GitHub's `signed/` folder.
+1. **Create an Account / Sign In**:
+   - Navigate to `http://localhost:5000` (or your LAN/cloud URL).
+   - If visiting for the first time, click **Create Account** to register your username and password.
+2. **Configure Your Personal Output Folder**:
+   - Click the **Settings** gear icon.
+   - Set **Signed Output Folder Path** to your personal OneDrive directory (click **"Use OneDrive Path"** for quick fill).
+3. **Upload PDF**:
+   - Drag and drop any handover PDF into the Desktop Dashboard. It will be placed into your private pending folder.
+4. **Scan & Sign on Mobile**:
+   - Scan the QR code on your desktop screen with your phone camera.
+   - Your phone will automatically log into your workspace and display your pending documents.
+   - Tap **Sign Document Now**, draw your signature, and tap **Save & Overlay Signature**.
+5. **Complete**:
+   - The signed PDF is instantly saved to your configured output folder (e.g. OneDrive) and appears in your Completed list.
 
 ---
 
 ## 📁 Directory Structure
 
 ```
-it-handover-signer/
-├── app.py                      # Flask backend & PyMuPDF signing pipeline + GitHub API
-├── config.json                 # Placement coordinates, folder config & GitHub settings
-├── clean_github_pending.ps1    # PowerShell script to purge GitHub pending files
+IT Signer/
+├── app.py                      # Flask backend, PyMuPDF signing pipeline & auth
+├── db.py                       # SQLite user accounts, tokens & settings database
+├── it_signer.db                # SQLite database (auto-generated)
+├── config.json                 # System fallback defaults
 ├── requirements.txt            # Python dependencies
-├── .gitignore                  # Prevents committing pending & signed PDFs to GitHub
 ├── run.bat                     # Windows one-click launcher
 ├── start.ps1                   # PowerShell launcher
-├── pending/                    # Input folder for unsigned PDFs (starts clean)
-│   └── .gitkeep
-├── signed/                     # Output folder for signed PDFs (stays permanently)
-│   └── .gitkeep
-├── samples/                    # Sample template PDFs (not auto-loaded)
-├── templates/
-│   ├── base.html               # Base layout & styles
-│   ├── desktop.html            # Desktop dashboard with QR code, file & GitHub manager
-│   ├── mobile_list.html        # Mobile document selection
-│   ├── sign.html               # Mobile touch signature interface
-│   ├── signed_success.html     # Completion confirmation screen
-│   └── error.html              # Error page
-└── static/
-    ├── css/
-    │   └── style.css           # Styling & animations
-    ├── js/
-    │   ├── signature_pad.umd.min.js # Local offline SignaturePad
-    │   ├── qrcode.min.js       # Local offline QR generator
-    │   └── desktop.js          # Desktop dashboard logic & GitHub interactions
+├── sync_signed_to_pc.ps1       # Background PC folder sync script
+├── pending/                    # User pending folders (e.g. pending/<username>/)
+├── signed/                     # User signed folders (e.g. signed/<username>/ or custom OneDrive)
+├── static/                     # CSS, JS, branding assets
+└── templates/                  # HTML templates (login, desktop, mobile, sign)
 ```
 
 ---
 
-## ⚙️ Configuration (`config.json`)
+## 💻 Background PC Sync Script
 
-```json
-{
-    "host": "0.0.0.0",
-    "port": 5000,
-    "pending_dir": "pending",
-    "signed_dir": "signed",
-    "signature_placement": {
-        "recipient": {
-            "page": -1,
-            "x": 320,
-            "y": 630,
-            "width": 210,
-            "height": 70,
-            "label": "Employee / Recipient",
-            "add_timestamp": true,
-            "timestamp_fontsize": 7.5
-        },
-        "issuer": {
-            "page": -1,
-            "x": 60,
-            "y": 630,
-            "width": 200,
-            "height": 70,
-            "label": "IT Admin / Issuer",
-            "add_timestamp": true,
-            "timestamp_fontsize": 7.5
-        }
-    },
-    "auto_archive_pending": true,
-    "github_repo": "your-username/it-handover-signer",
-    "github_token": "ghp_...",
-    "github_branch": "main",
-    "auto_delete_github_pending": true,
-    "auto_upload_github_signed": true
-}
+Each user has a personalized command in **Settings &rarr; My Account & Quick Sync**:
+```powershell
+powershell -ExecutionPolicy Bypass -File .\sync_signed_to_pc.ps1 -Token "<your-personal-token>"
 ```
-
-*All coordinate units are in PDF standard points (Standard A4 is 595 × 842 points).*
+This automatically watches and downloads any newly signed documents created by your account into your personal local folder.
