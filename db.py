@@ -10,6 +10,23 @@ BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / 'it_signer.db'
 BACKUP_PATH = BASE_DIR / 'users_backup.json'
 
+ADMIN_USERNAMES = {'jakub.kuchar', 'admin', 'jacob', 'jkuchar'}
+
+def is_admin_user(user_or_username):
+    """Return True if the user is an administrator (e.g., jakub.kuchar)."""
+    if not user_or_username:
+        return False
+    if isinstance(user_or_username, str):
+        return user_or_username.strip().lower() in ADMIN_USERNAMES
+    if isinstance(user_or_username, dict):
+        uname = (user_or_username.get('username') or '').strip().lower()
+        if uname in ADMIN_USERNAMES:
+            return True
+        settings = user_or_username.get('settings') or {}
+        if isinstance(settings, dict) and settings.get('is_admin') is True:
+            return True
+    return False
+
 def get_db_connection():
     """Create and return a database connection configured with Row factory and WAL mode."""
     conn = sqlite3.connect(str(DB_PATH), timeout=15)
@@ -19,7 +36,7 @@ def get_db_connection():
     return conn
 
 def init_db():
-    """Initialize SQLite database tables, indexes, and restore from backup if empty."""
+    """Initialize SQLite database tables, indexes, and merge any users from backup."""
     conn = get_db_connection()
     try:
         with conn:
@@ -40,19 +57,17 @@ def init_db():
     finally:
         conn.close()
 
-    # Automatically restore users from persistent backup if database has 0 users
+    # Always merge any missing users from persistent backup file
     try:
-        if count_users() == 0:
-            restore_users_from_backup()
+        restore_users_from_backup()
     except Exception:
         pass
 
 def parse_user_row(row):
-    """Convert a sqlite3.Row into a Python dictionary with parsed settings."""
+    """Convert a sqlite3.Row into a Python dictionary with parsed settings and is_admin flag."""
     if not row:
         return None
     user_dict = dict(row)
-    # Parse settings JSON
     raw_settings = user_dict.get('settings', '{}')
     if isinstance(raw_settings, str):
         try:
@@ -61,6 +76,8 @@ def parse_user_row(row):
             user_dict['settings'] = {}
     elif not isinstance(user_dict.get('settings'), dict):
         user_dict['settings'] = {}
+
+    user_dict['is_admin'] = is_admin_user(user_dict)
     return user_dict
 
 def validate_username(username):
@@ -75,7 +92,7 @@ def validate_username(username):
     return True, clean
 
 def create_user(username, password, display_name=None, initial_settings=None):
-    """Create a new user account with hashed password, unique access token, and settings."""
+    """Create a new user account with hashed password, unique access token, and isolated settings."""
     valid, result = validate_username(username)
     if not valid:
         raise ValueError(result)
@@ -88,7 +105,16 @@ def create_user(username, password, display_name=None, initial_settings=None):
     clean_display = (display_name or '').strip() or clean_username
     pw_hash = generate_password_hash(clean_pw)
     token = secrets.token_urlsafe(24)
-    settings_json = json.dumps(initial_settings or {})
+
+    settings_dict = dict(initial_settings or {})
+    if not settings_dict.get('pending_dir') or settings_dict.get('pending_dir') == 'pending':
+        settings_dict['pending_dir'] = f"pending/{clean_username}"
+    if not settings_dict.get('signed_dir') or settings_dict.get('signed_dir') == 'signed':
+        settings_dict['signed_dir'] = f"signed/{clean_username}"
+    if not settings_dict.get('archive_dir') or settings_dict.get('archive_dir') == 'pending/.archive':
+        settings_dict['archive_dir'] = f"pending/{clean_username}/.archive"
+
+    settings_json = json.dumps(settings_dict)
 
     conn = get_db_connection()
     try:
@@ -189,11 +215,12 @@ def update_user_settings(user_id, new_settings):
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
-        cursor.execute("SELECT settings FROM users WHERE id = ?", (user_id,))
+        cursor.execute("SELECT username, settings FROM users WHERE id = ?", (user_id,))
         row = cursor.fetchone()
         if not row:
             return False, "User not found."
 
+        username = row['username']
         current_settings = {}
         try:
             current_settings = json.loads(row['settings'])
@@ -201,6 +228,12 @@ def update_user_settings(user_id, new_settings):
             pass
 
         current_settings.update(new_settings)
+        # Never allow a user's folder to collapse to the shared root 'pending' or 'signed'
+        if not current_settings.get('pending_dir') or current_settings.get('pending_dir').strip('/\\') == 'pending':
+            current_settings['pending_dir'] = f"pending/{username}"
+        if not current_settings.get('signed_dir') or current_settings.get('signed_dir').strip('/\\') == 'signed':
+            current_settings['signed_dir'] = f"signed/{username}"
+
         with conn:
             cursor.execute(
                 "UPDATE users SET settings = ? WHERE id = ?", 
@@ -247,6 +280,7 @@ def regenerate_user_token(user_id):
     try:
         with conn:
             conn.execute("UPDATE users SET quick_access_token = ? WHERE id = ?", (new_token, user_id))
+        save_users_backup()
         return new_token
     finally:
         conn.close()
@@ -325,7 +359,14 @@ def import_users_data(users_data):
                 pw_hash = u.get('password_hash')
                 display_name = u.get('display_name') or username
                 token = u.get('quick_access_token') or secrets.token_urlsafe(24)
-                settings = json.dumps(u.get('settings') or {})
+                s_dict = dict(u.get('settings') or {})
+                if not s_dict.get('pending_dir') or s_dict.get('pending_dir').strip('/\\') == 'pending':
+                    s_dict['pending_dir'] = f"pending/{username}"
+                if not s_dict.get('signed_dir') or s_dict.get('signed_dir').strip('/\\') == 'signed':
+                    s_dict['signed_dir'] = f"signed/{username}"
+                if not s_dict.get('archive_dir') or s_dict.get('archive_dir').strip('/\\') == 'pending/.archive':
+                    s_dict['archive_dir'] = f"pending/{username}/.archive"
+                settings = json.dumps(s_dict)
                 created_at = u.get('created_at') or datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 last_login = u.get('last_login')
                 cursor.execute("""
@@ -338,7 +379,7 @@ def import_users_data(users_data):
         conn.close()
 
 def restore_users_from_backup():
-    """Restore users from local backup file if database is empty."""
+    """Restore any missing users from local backup file."""
     if BACKUP_PATH.exists():
         try:
             with open(BACKUP_PATH, 'r', encoding='utf-8') as f:
@@ -347,4 +388,3 @@ def restore_users_from_backup():
         except Exception as e:
             print(f"Failed to restore users backup: {e}")
     return 0
-
