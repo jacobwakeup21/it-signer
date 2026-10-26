@@ -11,20 +11,20 @@
         </div>
 
         <div>
-            <h2 class="text-xl sm:text-2xl font-black text-white tracking-tight">Handover Signed!</h2>
+            <h2 class="text-xl sm:text-2xl font-black text-white tracking-tight">Document Completed!</h2>
             <p class="text-xs sm:text-sm text-slate-300 mt-1">
-                Your signature has been embedded onto the PDF and saved to <code class="text-cyan-300 font-mono">./signed</code>.
+                Your signature has been embedded onto the PDF and the document has moved from Pending to <strong class="text-emerald-400">Completed</strong>.
             </p>
         </div>
 
         <div class="bg-[#070c18] p-3 rounded-xl border border-cyan-500/25 text-left">
-            <span class="text-[10px] text-slate-400 font-semibold uppercase tracking-wider block">Generated Document</span>
+            <span class="text-[10px] text-slate-400 font-semibold uppercase tracking-wider block">Completed Document</span>
             <p class="text-xs font-mono font-bold text-cyan-300 truncate mt-0.5">{{ filename }}</p>
         </div>
 
         <!-- Signed Page Preview -->
         <div class="bg-[#070c18] p-2 rounded-xl border border-emerald-500/30 overflow-hidden shadow-inner">
-            <img src="/api/preview/signed/{{ filename }}/1?zoom=1.0" 
+            <img src="/api/preview/signed/{{ filename | urlencode }}/-1?zoom=1.0" 
                  alt="Signed Document" 
                  class="w-full h-auto max-h-64 object-contain rounded mx-auto"
                  onerror="this.style.display='none'">
@@ -32,13 +32,13 @@
 
         <!-- Actions -->
         <div class="space-y-2 pt-2">
-            <a href="/download/signed/{{ filename }}" download="{{ filename }}" target="_blank" class="w-full py-3.5 bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white rounded-xl text-sm font-bold shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-2 transition active:scale-[0.99]">
+            <a href="/download/signed/{{ filename | urlencode }}" download="{{ filename }}" target="_blank" class="w-full py-3.5 bg-gradient-to-r from-emerald-600 via-teal-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white rounded-xl text-sm font-bold shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-2 transition active:scale-[0.99]">
                 <i data-lucide="download" class="w-4 h-4"></i>
                 Download Signed PDF
             </a>
             <a href="/mobile" class="w-full py-3 bg-[#101c3d] hover:bg-[#182b5c] text-cyan-300 hover:text-white border border-cyan-500/30 rounded-xl text-sm font-semibold flex items-center justify-center gap-2 transition">
                 <i data-lucide="arrow-left" class="w-4 h-4"></i>
-                Sign Another Document
+                Back to My Documents
             </a>
         </div>
     </div>
