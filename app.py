@@ -1,9 +1,12 @@
 import os
 import io
 import re
+import gc
+import time
 import json
 import base64
 import socket
+import shutil
 import zipfile
 import urllib.request
 import urllib.error
@@ -104,11 +107,11 @@ DEFAULT_CONFIG = {
         }
     },
     "secret_key": "3e365053355f0155a46ec9106f57e7ad6b3cdc4cde4dcaa893571b43af7b5e39",
-    "auto_archive_pending": False,
+    "auto_archive_pending": True,
     "github_repo": "",
     "github_token": "",
     "github_branch": "data",
-    "auto_delete_github_pending": False,
+    "auto_delete_github_pending": True,
     "auto_upload_github_signed": True
 }
 
@@ -151,20 +154,21 @@ save_config = save_system_config
 def get_current_user():
     """
     Retrieve current authenticated user from:
-    1. Active Flask session
+    1. Query parameter ?token=<token>
     2. Authorization header (Bearer <token>)
-    3. Query parameter ?token=<token>
+    3. Active Flask session
     """
-    # Ensure users are restored if database is fresh/empty (e.g. after container restart)
     if db.count_users() == 0:
-        sync_users_from_cloud()
+        sync_users_from_cloud(force=True)
 
     # 1. Query parameter: ?token=... (takes precedence so scanning a personal QR code switches session)
     token = request.args.get('token', '').strip()
     if token:
         u = db.get_user_by_token(token)
+        if not u:
+            sync_users_from_cloud(force=True)
+            u = db.get_user_by_token(token)
         if u:
-            # When loaded in a browser (e.g. mobile scanning desktop QR code), establish/switch session
             session.permanent = True
             session['user_id'] = u['id']
             session['username'] = u['username']
@@ -204,20 +208,20 @@ def login_required(f):
 
 @app.context_processor
 def inject_user_context():
-    """Make current_user, logged_in_user, and is_logged_in available in all Jinja templates."""
+    """Make current_user, logged_in_user, is_logged_in, and is_admin available in all Jinja templates."""
     active_user = getattr(g, 'user', None) if (has_request_context() and hasattr(g, 'user')) else None
     user = active_user or (get_current_user() if has_request_context() else None)
     return {
         'current_user': user,
         'logged_in_user': user,
-        'is_logged_in': bool(user)
+        'is_logged_in': bool(user),
+        'is_admin': db.is_admin_user(user)
     }
 
 def get_user_config(user=None):
     """
     Get effective configuration for a given user or current authenticated user.
-    Each user has their own pending_dir, signed_dir, archive_dir, signature placement,
-    and cloud sync settings.
+    Each user is strictly isolated to their own pending_dir, signed_dir, and archive_dir.
     """
     sys_cfg = load_system_config()
     if not user:
@@ -227,14 +231,19 @@ def get_user_config(user=None):
             return sys_cfg
 
     user_settings = user.get('settings', {}) if isinstance(user, dict) else {}
-    username = user.get('username', 'default')
+    username = (user.get('username') or 'default').strip()
 
     merged = sys_cfg.copy()
 
-    # User-specific directories (defaults to pending/<username> and signed/<username>)
-    user_pending = user_settings.get('pending_dir') or f"pending/{username}"
-    user_signed = user_settings.get('signed_dir') or f"signed/{username}"
-    user_archive = user_settings.get('archive_dir') or f"{user_pending}/.archive"
+    # Enforce strict per-user folder isolation (never allow generic root 'pending' or 'signed')
+    raw_pending = (user_settings.get('pending_dir') or '').strip().strip('/\\')
+    user_pending = raw_pending if (raw_pending and raw_pending.lower() != 'pending') else f"pending/{username}"
+
+    raw_signed = (user_settings.get('signed_dir') or '').strip().strip('/\\')
+    user_signed = raw_signed if (raw_signed and raw_signed.lower() != 'signed') else f"signed/{username}"
+
+    raw_archive = (user_settings.get('archive_dir') or '').strip().strip('/\\')
+    user_archive = raw_archive if (raw_archive and raw_archive.lower() != 'pending/.archive') else f"{user_pending}/.archive"
 
     merged['pending_dir'] = user_pending
     merged['signed_dir'] = user_signed
@@ -267,6 +276,92 @@ def get_resolved_path(folder_path_str):
         p = BASE_DIR / p
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+# ----------------- DELETED FILES TRACKER (PREVENT RESURRECTION) -----------------
+
+def _get_deleted_tracker_file(user):
+    username = (user.get('username') if isinstance(user, dict) else str(user or 'default')).strip()
+    user_dir = BASE_DIR / 'pending' / username
+    user_dir.mkdir(parents=True, exist_ok=True)
+    return user_dir / '.deleted_tracker.json'
+
+def load_deleted_set(user, folder_type):
+    """Return a set of filenames that the user has explicitly deleted or moved from folder_type."""
+    if not user:
+        return set()
+    tracker_file = _get_deleted_tracker_file(user)
+    if not tracker_file.exists():
+        return set()
+    try:
+        data = json.loads(tracker_file.read_text(encoding='utf-8'))
+        items = data.get(folder_type, [])
+        return set(items) if isinstance(items, list) else set()
+    except Exception:
+        return set()
+
+def mark_file_deleted(user, folder_type, filename):
+    """Record a filename as deleted so background GitHub syncs never resurrect it."""
+    if not user or not filename:
+        return
+    clean_name = Path(filename).name
+    tracker_file = _get_deleted_tracker_file(user)
+    data = {"pending": [], "signed": []}
+    if tracker_file.exists():
+        try:
+            loaded = json.loads(tracker_file.read_text(encoding='utf-8'))
+            if isinstance(loaded, dict):
+                data.update(loaded)
+        except Exception:
+            pass
+    current = set(data.get(folder_type, []))
+    current.add(clean_name)
+    data[folder_type] = sorted(current)
+    try:
+        tracker_file.write_text(json.dumps(data, indent=2), encoding='utf-8')
+    except Exception:
+        pass
+
+def unmark_file_deleted(user, folder_type, filename=None):
+    """Remove a filename (or all filenames if None) from the deleted tracker."""
+    if not user:
+        return
+    tracker_file = _get_deleted_tracker_file(user)
+    if not tracker_file.exists():
+        return
+    try:
+        data = json.loads(tracker_file.read_text(encoding='utf-8'))
+        if not isinstance(data, dict):
+            return
+        if filename is None:
+            data[folder_type] = []
+        else:
+            clean_name = Path(filename).name
+            current = set(data.get(folder_type, []))
+            current.discard(clean_name)
+            data[folder_type] = sorted(current)
+        tracker_file.write_text(json.dumps(data, indent=2), encoding='utf-8')
+    except Exception:
+        pass
+
+def safe_unlink(file_path):
+    """Safely delete a file on Windows even if PyMuPDF briefly held a file handle."""
+    if not file_path or not file_path.exists():
+        return False
+    for attempt in range(3):
+        try:
+            file_path.unlink()
+            return True
+        except PermissionError:
+            gc.collect()
+            time.sleep(0.08 * (attempt + 1))
+        except FileNotFoundError:
+            return True
+        except Exception:
+            if attempt == 2:
+                raise
+            gc.collect()
+            time.sleep(0.05)
+    return not file_path.exists()
 
 def get_local_ips():
     """Discover all accessible local IPv4 addresses."""
@@ -363,12 +458,12 @@ def format_timestamp_localized(epoch_sec, config=None, fmt='%Y-%m-%d %H:%M:%S'):
     return datetime.fromtimestamp(epoch_sec).strftime(fmt)
 
 def get_github_config(user=None):
-    """Retrieve normalized GitHub settings for the given or current user."""
+    """Retrieve normalized GitHub settings."""
     cfg = get_user_config(user)
     raw_repo = os.environ.get('GITHUB_REPO') or cfg.get('github_repo', '')
     token = os.environ.get('GITHUB_TOKEN') or cfg.get('github_token', '')
     branch = os.environ.get('GITHUB_BRANCH') or cfg.get('github_branch', 'data')
-    auto_delete = cfg.get('auto_delete_github_pending', False)
+    auto_delete = cfg.get('auto_delete_github_pending', True)
     auto_upload = cfg.get('auto_upload_github_signed', True)
 
     repo = raw_repo.strip()
@@ -476,49 +571,65 @@ def quote_github_path(path_str):
     parts = clean.split('/')
     return '/'.join(urllib.parse.quote(p, safe='') for p in parts)
 
-def github_list_folder_files(folder='pending', user=None):
-    """List all files in GitHub repo's specified directory across configured branch and main."""
+def github_list_folder_files(folder='pending', user=None, include_root_for_admin=False):
+    """
+    List PDF files in the user's isolated GitHub directory: `<folder>/<username>`.
+    Each user only sees and syncs their own files.
+    If include_root_for_admin is True and the user is an admin, also include any legacy files at `<folder>/`.
+    """
     gh = get_github_config(user)
     if not gh.get('repo'):
         return []
 
     clean_folder = folder.strip().strip('/')
+    username = (user.get('username') if isinstance(user, dict) else '').strip()
+
+    paths_to_check = []
+    if username:
+        paths_to_check.append(f"{clean_folder}/{username}")
+        if include_root_for_admin and db.is_admin_user(user):
+            paths_to_check.append(clean_folder)
+    else:
+        paths_to_check.append(clean_folder)
+
     branches = [gh.get('branch', 'data')]
     if 'main' not in branches:
         branches.append('main')
 
     files_by_name = {}
     for b_name in branches:
-        try:
-            query = urllib.parse.urlencode({'ref': b_name})
-            endpoint = f"repos/{gh['repo']}/contents/{clean_folder}?{query}"
-            items = github_api_request("GET", endpoint, user=user)
-            if isinstance(items, list):
-                for item in items:
-                    if item.get('type') == 'file' and item.get('name') != '.gitkeep':
-                        name = item.get('name')
-                        if name not in files_by_name:
-                            files_by_name[name] = {
-                                "name": name,
-                                "path": item.get('path'),
-                                "sha": item.get('sha'),
-                                "size": item.get('size', 0),
-                                "size_formatted": format_file_size(item.get('size', 0)),
-                                "download_url": item.get('download_url'),
-                                "html_url": item.get('html_url'),
-                                "branch": b_name
-                            }
-        except Exception as e:
-            if "404" not in str(e):
-                print(f"Notice: listing GitHub {folder} files on branch {b_name}: {e}")
+        for folder_path in paths_to_check:
+            try:
+                encoded_folder = quote_github_path(folder_path)
+                query = urllib.parse.urlencode({'ref': b_name})
+                endpoint = f"repos/{gh['repo']}/contents/{encoded_folder}?{query}"
+                items = github_api_request("GET", endpoint, user=user)
+                if isinstance(items, list):
+                    for item in items:
+                        if item.get('type') == 'file' and item.get('name') != '.gitkeep':
+                            name = item.get('name')
+                            if name not in files_by_name:
+                                files_by_name[name] = {
+                                    "name": name,
+                                    "path": item.get('path'),
+                                    "sha": item.get('sha'),
+                                    "size": item.get('size', 0),
+                                    "size_formatted": format_file_size(item.get('size', 0)),
+                                    "download_url": item.get('download_url'),
+                                    "html_url": item.get('html_url'),
+                                    "branch": b_name
+                                }
+            except Exception as e:
+                if "404" not in str(e):
+                    print(f"Notice: listing GitHub {folder_path} files on branch {b_name}: {e}")
 
     return list(files_by_name.values())
 
-def github_list_pending_files(user=None):
-    return github_list_folder_files('pending', user=user)
+def github_list_pending_files(user=None, include_root_for_admin=False):
+    return github_list_folder_files('pending', user=user, include_root_for_admin=include_root_for_admin)
 
-def github_list_signed_files(user=None):
-    return github_list_folder_files('signed', user=user)
+def github_list_signed_files(user=None, include_root_for_admin=False):
+    return github_list_folder_files('signed', user=user, include_root_for_admin=include_root_for_admin)
 
 def github_delete_file(path_in_repo, sha=None, commit_msg=None, user=None, branch=None):
     """
@@ -543,7 +654,6 @@ def github_delete_file(path_in_repo, sha=None, commit_msg=None, user=None, branc
 
     for b_name in target_branches:
         try:
-            # Query SHA on this specific branch to ensure it exists on b_name
             query = urllib.parse.urlencode({'ref': b_name})
             endpoint = f"repos/{gh['repo']}/contents/{encoded_path}?{query}"
             item = github_api_request("GET", endpoint, user=user)
@@ -566,6 +676,28 @@ def github_delete_file(path_in_repo, sha=None, commit_msg=None, user=None, branc
 
     return deleted_count > 0
 
+def github_delete_user_document(folder_type, filename, user=None):
+    """Delete a user's document from GitHub (both user subfolder and legacy root folder if admin)."""
+    gh = get_github_config(user)
+    if not gh.get('is_configured'):
+        return False
+    clean_name = Path(filename).name
+    username = (user.get('username') if isinstance(user, dict) else '').strip()
+    candidate_paths = []
+    if username:
+        candidate_paths.append(f"{folder_type}/{username}/{clean_name}")
+    if not username or db.is_admin_user(user):
+        candidate_paths.append(f"{folder_type}/{clean_name}")
+
+    any_deleted = False
+    for c_path in candidate_paths:
+        try:
+            if github_delete_file(c_path, user=user):
+                any_deleted = True
+        except Exception as e:
+            print(f"Notice: GitHub delete check for {c_path}: {e}")
+    return any_deleted
+
 def github_upload_file(path_in_repo, file_bytes, commit_msg=None, user=None):
     """Upload or update a file in GitHub repository."""
     gh = get_github_config(user)
@@ -578,7 +710,7 @@ def github_upload_file(path_in_repo, file_bytes, commit_msg=None, user=None):
     b64_content = base64.b64encode(file_bytes).decode('ascii')
 
     payload = {
-        "message": commit_msg or f"Add signed document {filename} via IT Signer",
+        "message": commit_msg or f"Add document {filename} via IT Signer",
         "content": b64_content,
         "branch": gh['branch']
     }
@@ -595,10 +727,9 @@ def github_upload_file(path_in_repo, file_bytes, commit_msg=None, user=None):
 
 def ensure_file_on_disk(folder_type, filename, user=None):
     """
-    Ensure the requested file exists in the user's local folder.
-    If missing locally (e.g. after Render container restart or spin-down),
-    attempt to fetch it from the GitHub repository and save it to disk.
-    Returns Path object if file exists/restored, or None if not found anywhere.
+    Ensure the requested file exists in the user's isolated local folder.
+    If missing locally (e.g. after Render container restart), fetch ONLY from the user's
+    own GitHub directory (`<folder_type>/<username>/<filename>`), and only if not deleted.
     """
     config = get_user_config(user)
     if folder_type == 'pending':
@@ -615,54 +746,49 @@ def ensure_file_on_disk(folder_type, filename, user=None):
     if local_path.exists():
         return local_path
 
-    # Check root folder (BASE_DIR / folder_type / clean_name)
-    base_fallback = BASE_DIR / folder_type / clean_name
-    if base_fallback.exists():
-        try:
-            target_dir.mkdir(parents=True, exist_ok=True)
-            import shutil
-            shutil.copy2(str(base_fallback), str(local_path))
-            return local_path
-        except Exception:
-            return base_fallback
+    # Case-insensitive local lookup in user's folder
+    if target_dir.exists():
+        for entry in target_dir.iterdir():
+            if entry.is_file() and entry.name.lower() == clean_name.lower():
+                return entry
 
-    # Fetch from GitHub repository if configured
+    # Never resurrect a file that the user explicitly deleted or already signed out of pending
+    if folder_type in ('pending', 'signed') and clean_name in load_deleted_set(user, folder_type):
+        return None
+
+    # Fetch from the user's isolated folder in GitHub repository if configured
     gh_cfg = get_github_config(user)
-    if gh_cfg.get('repo'):
-        cand_paths = [
-            f"{folder_type}/{clean_name}",
-            f"{config.get('pending_dir' if folder_type == 'pending' else 'signed_dir')}/{clean_name}".replace('\\', '/').strip('/')
-        ]
-        cand_paths = list(dict.fromkeys(cand_paths))
+    username = (user.get('username') if isinstance(user, dict) else '').strip()
+    if gh_cfg.get('repo') and username and folder_type in ('pending', 'signed'):
+        repo_path = f"{folder_type}/{username}/{clean_name}"
         branches = [gh_cfg.get('branch', 'data')]
         if 'main' not in branches:
             branches.append('main')
 
         for b_name in branches:
-            for repo_path in cand_paths:
-                try:
-                    encoded = quote_github_path(repo_path)
-                    query = urllib.parse.urlencode({'ref': b_name})
-                    item = github_api_request("GET", f"repos/{gh_cfg['repo']}/contents/{encoded}?{query}", user=user)
-                    file_bytes = None
-                    if isinstance(item, dict):
-                        if item.get('content'):
-                            file_bytes = base64.b64decode(item['content'])
-                        elif item.get('download_url'):
-                            req_headers = {"User-Agent": "IT-Signer/2.0"}
-                            if gh_cfg.get('token'):
-                                req_headers["Authorization"] = f"Bearer {gh_cfg['token']}"
-                            req = urllib.request.Request(item['download_url'], headers=req_headers)
-                            with urllib.request.urlopen(req, timeout=20) as resp:
-                                file_bytes = resp.read()
+            try:
+                encoded = quote_github_path(repo_path)
+                query = urllib.parse.urlencode({'ref': b_name})
+                item = github_api_request("GET", f"repos/{gh_cfg['repo']}/contents/{encoded}?{query}", user=user)
+                file_bytes = None
+                if isinstance(item, dict):
+                    if item.get('content'):
+                        file_bytes = base64.b64decode(item['content'])
+                    elif item.get('download_url'):
+                        req_headers = {"User-Agent": "IT-Signer/2.0"}
+                        if gh_cfg.get('token'):
+                            req_headers["Authorization"] = f"Bearer {gh_cfg['token']}"
+                        req = urllib.request.Request(item['download_url'], headers=req_headers)
+                        with urllib.request.urlopen(req, timeout=20) as resp:
+                            file_bytes = resp.read()
 
-                    if file_bytes:
-                        target_dir.mkdir(parents=True, exist_ok=True)
-                        local_path.write_bytes(file_bytes)
-                        print(f"[CLOUD-FALLBACK] Restored '{clean_name}' from GitHub ({b_name}:{repo_path}) to local disk.")
-                        return local_path
-                except Exception:
-                    pass
+                if file_bytes:
+                    target_dir.mkdir(parents=True, exist_ok=True)
+                    local_path.write_bytes(file_bytes)
+                    print(f"[CLOUD-FALLBACK] Restored '{clean_name}' for user '{username}' from GitHub ({b_name}:{repo_path}).")
+                    return local_path
+            except Exception:
+                pass
 
     return None
 
@@ -670,26 +796,21 @@ _last_github_sync = {}
 
 def sync_from_github_if_needed(user=None, force=False):
     """
-    Synchronize files from GitHub repository to local disk if local folder is empty
-    or missing files from GitHub, or if periodically due / forced.
+    Synchronize ONLY the current user's files from GitHub (`pending/<username>` and `signed/<username>`)
+    to their local disk, skipping any files that were deleted or already completed.
     """
     now = datetime.now(timezone.utc).timestamp()
     active_g_user = getattr(g, 'user', None) if (has_request_context() and hasattr(g, 'user')) else None
     u = user or active_g_user or (get_current_user() if has_request_context() else None)
-    username = u.get('username', 'default') if isinstance(u, dict) else 'default'
+    if not u or not isinstance(u, dict):
+        return
+
+    username = u.get('username', '').strip()
+    if not username:
+        return
+
     last_time = _last_github_sync.get(username, 0)
-
-    config = get_user_config(u)
-    pending_dir = get_resolved_path(config.get('pending_dir'))
-    signed_dir = get_resolved_path(config.get('signed_dir'))
-
-    has_pending = any(p for p in pending_dir.glob('*.pdf') if not p.name.startswith('.')) if pending_dir.exists() else False
-    has_signed = any(p for p in signed_dir.glob('*.pdf') if not p.name.startswith('.')) if signed_dir.exists() else False
-
-    need_pending_sync = force or (not has_pending) or (now - last_time >= 30)
-    need_signed_sync = force or (not has_signed) or (now - last_time >= 30)
-
-    if not need_pending_sync and not need_signed_sync:
+    if not force and (now - last_time < 45):
         return
 
     gh_cfg = get_github_config(u)
@@ -698,42 +819,52 @@ def sync_from_github_if_needed(user=None, force=False):
 
     _last_github_sync[username] = now
 
-    if need_pending_sync:
-        try:
-            gh_pending = github_list_pending_files(user=u)
-            for gf in gh_pending:
-                fname = gf.get('name', '')
-                if fname.lower().endswith('.pdf') and not fname.startswith('.'):
-                    if not (pending_dir / fname).exists():
-                        ensure_file_on_disk('pending', fname, user=u)
-        except Exception as e:
-            print(f"Notice: sync pending from GitHub: {e}")
+    config = get_user_config(u)
+    pending_dir = get_resolved_path(config.get('pending_dir'))
+    signed_dir = get_resolved_path(config.get('signed_dir'))
 
-    if need_signed_sync:
-        try:
-            gh_signed = github_list_signed_files(user=u)
-            for gf in gh_signed:
-                fname = gf.get('name', '')
-                if fname.lower().endswith('.pdf') and not fname.startswith('.'):
-                    if not (signed_dir / fname).exists():
-                        ensure_file_on_disk('signed', fname, user=u)
-        except Exception as e:
-            print(f"Notice: sync signed from GitHub: {e}")
+    deleted_pending = load_deleted_set(u, 'pending')
+    deleted_signed = load_deleted_set(u, 'signed')
 
-def sync_users_from_cloud():
-    """If DB has 0 users, restore from local backup or GitHub repository."""
-    if db.count_users() > 0:
+    try:
+        gh_pending = github_list_pending_files(user=u, include_root_for_admin=False)
+        for gf in gh_pending:
+            fname = gf.get('name', '')
+            if fname.lower().endswith('.pdf') and not fname.startswith('.'):
+                if fname not in deleted_pending and not (pending_dir / fname).exists():
+                    ensure_file_on_disk('pending', fname, user=u)
+    except Exception as e:
+        print(f"Notice: sync pending from GitHub for {username}: {e}")
+
+    try:
+        gh_signed = github_list_signed_files(user=u, include_root_for_admin=False)
+        for gf in gh_signed:
+            fname = gf.get('name', '')
+            if fname.lower().endswith('.pdf') and not fname.startswith('.'):
+                if fname not in deleted_signed and not (signed_dir / fname).exists():
+                    ensure_file_on_disk('signed', fname, user=u)
+    except Exception as e:
+        print(f"Notice: sync signed from GitHub for {username}: {e}")
+
+_last_user_cloud_sync = 0
+
+def sync_users_from_cloud(force=False):
+    """Merge any user accounts from local backup and GitHub `users_backup.json` into SQLite."""
+    global _last_user_cloud_sync
+    now = time.time()
+    if not force and db.count_users() > 0 and (now - _last_user_cloud_sync < 60):
         return
-    # Check local backup first
+    _last_user_cloud_sync = now
+
+    # 1. Merge local backup
     try:
         restored = db.restore_users_from_backup()
         if restored > 0:
-            print(f"[AUTH] Restored {restored} user(s) from local backup.")
-            return
+            print(f"[AUTH] Merged {restored} user(s) from local backup.")
     except Exception as e:
         print(f"[AUTH] Local backup restore error: {e}")
 
-    # Try restoring from GitHub repository
+    # 2. Merge from GitHub repository
     try:
         gh = get_github_config()
         repo = gh.get('repo') or 'jacobwakeup21/it-signer'
@@ -752,8 +883,8 @@ def sync_users_from_cloud():
                     count = db.import_users_data(users_data)
                     if count > 0:
                         db.save_users_backup()
-                        print(f"[AUTH] Restored {count} user(s) from GitHub cloud backup ({b}).")
-                        return
+                        print(f"[AUTH] Merged {count} user(s) from GitHub cloud backup ({b}).")
+                    return
             except Exception:
                 pass
     except Exception as e:
@@ -893,7 +1024,7 @@ def login_page():
     message = request.args.get('message') or None
     total_users = db.count_users()
     if total_users == 0:
-        sync_users_from_cloud()
+        sync_users_from_cloud(force=True)
         total_users = db.count_users()
 
     active_tab = request.form.get('action') or ('register' if total_users == 0 else 'login')
@@ -902,7 +1033,6 @@ def login_page():
         action = request.form.get('action', 'login')
         username = request.form.get('username', '').strip()
         password = request.form.get('password', '').strip()
-        remember = bool(request.form.get('remember', '1'))
 
         if action == 'register':
             active_tab = 'register'
@@ -917,6 +1047,7 @@ def login_page():
                     if not valid:
                         error = clean_username
                     else:
+                        sync_users_from_cloud(force=True)
                         initial_settings = {
                             "pending_dir": f"pending/{clean_username}",
                             "signed_dir": f"signed/{clean_username}",
@@ -944,8 +1075,12 @@ def login_page():
                     error = str(e)
         else: # login
             user = db.authenticate_user(username, password)
+            if not user:
+                # Try syncing from cloud in case account was created on another instance
+                sync_users_from_cloud(force=True)
+                user = db.authenticate_user(username, password)
+
             if user:
-                # Permanent session (30 days) so closing browser does not log out
                 session.permanent = True
                 session['user_id'] = user['id']
                 session['username'] = user['username']
@@ -1024,14 +1159,15 @@ def desktop_dashboard():
                            public_url=public_url,
                            mobile_url=mobile_url_with_token,
                            user=g.user,
-                           user_token=user_token)
+                           user_token=user_token,
+                           is_admin=db.is_admin_user(g.user))
 
 @app.route('/mobile')
 @login_required
 def mobile_list():
     """Mobile document list page for authenticated user."""
     config = get_user_config(g.user)
-    return render_template('mobile_list.html', config=config, user=g.user)
+    return render_template('mobile_list.html', config=config, user=g.user, is_admin=db.is_admin_user(g.user))
 
 @app.route('/sign/<path:filename>')
 @login_required
@@ -1043,7 +1179,7 @@ def mobile_sign(filename):
     if not file_path or not file_path.exists():
         return render_template('error.html', 
                                title="Document Not Found", 
-                               message=f"The requested document '{filename}' is no longer in your pending folder. It may have already been signed."), 404
+                               message=f"The requested document '{filename}' is no longer in your pending folder. It may have already been signed and moved to Completed."), 404
         
     page_count = get_pdf_metadata(file_path)
     file_size = format_file_size(file_path.stat().st_size)
@@ -1071,39 +1207,12 @@ def signed_success(filename):
 @app.route('/api/documents')
 @login_required
 def api_documents():
-    """Return lists of pending and signed PDF files for current user."""
+    """Return lists of pending and signed PDF files strictly for the current authenticated user."""
     sync_from_github_if_needed(g.user)
 
     config = get_user_config(g.user)
     pending_dir = get_resolved_path(config.get('pending_dir'))
     signed_dir = get_resolved_path(config.get('signed_dir'))
-
-    # Adopt any root pending/signed files into user's folder if placed at repository root
-    root_pending = BASE_DIR / 'pending'
-    if root_pending.exists() and root_pending.resolve() != pending_dir.resolve():
-        for p in root_pending.iterdir():
-            if p.is_file() and p.suffix.lower() == '.pdf' and not p.name.startswith('.'):
-                dest = pending_dir / p.name
-                if not dest.exists():
-                    try:
-                        import shutil
-                        pending_dir.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(str(p), str(dest))
-                    except Exception:
-                        pass
-
-    root_signed = BASE_DIR / 'signed'
-    if root_signed.exists() and root_signed.resolve() != signed_dir.resolve():
-        for p in root_signed.iterdir():
-            if p.is_file() and p.suffix.lower() == '.pdf' and not p.name.startswith('.'):
-                dest = signed_dir / p.name
-                if not dest.exists():
-                    try:
-                        import shutil
-                        signed_dir.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(str(p), str(dest))
-                    except Exception:
-                        pass
     
     def scan_dir(directory, is_pending=True):
         files_data = []
@@ -1121,6 +1230,7 @@ def api_documents():
 
                     token = g.user.get('quick_access_token', '')
                     token_query = f"?token={token}" if token else ""
+                    encoded_name = urllib.parse.quote(entry.name)
 
                     files_data.append({
                         "name": entry.name,
@@ -1130,10 +1240,10 @@ def api_documents():
                         "modified_formatted": format_timestamp_localized(stat.st_mtime, config, '%Y-%m-%d %H:%M:%S'),
                         "page_count": page_count,
                         "metadata": metadata,
-                        "preview_url": f"/api/preview/{'pending' if is_pending else 'signed'}/{entry.name}/1{token_query}",
-                        "last_page_preview_url": f"/api/preview/{'pending' if is_pending else 'signed'}/{entry.name}/{page_count}{token_query}",
-                        "download_url": f"/download/{'pending' if is_pending else 'signed'}/{entry.name}{token_query}",
-                        "sign_url": f"/sign/{entry.name}{token_query}" if is_pending else None
+                        "preview_url": f"/api/preview/{'pending' if is_pending else 'signed'}/{encoded_name}/1{token_query}",
+                        "last_page_preview_url": f"/api/preview/{'pending' if is_pending else 'signed'}/{encoded_name}/{page_count}{token_query}",
+                        "download_url": f"/download/{'pending' if is_pending else 'signed'}/{encoded_name}{token_query}",
+                        "sign_url": f"/sign/{encoded_name}{token_query}" if is_pending else None
                     })
                 except Exception as e:
                     print(f"Error reading file {entry.name}: {e}")
@@ -1146,7 +1256,8 @@ def api_documents():
         "signed": scan_dir(signed_dir, is_pending=False),
         "user": {
             "username": g.user['username'],
-            "display_name": g.user['display_name']
+            "display_name": g.user['display_name'],
+            "is_admin": db.is_admin_user(g.user)
         }
     })
 
@@ -1277,9 +1388,10 @@ def api_qr():
 @app.route('/api/upload', methods=['POST'])
 @login_required
 def api_upload():
-    """Upload a new PDF into current user's pending directory."""
+    """Upload a new PDF into current user's isolated pending directory."""
     config = get_user_config(g.user)
     pending_dir = get_resolved_path(config.get('pending_dir'))
+    username = g.user['username']
 
     if 'file' not in request.files:
         return jsonify({"success": False, "error": "No file part in request"}), 400
@@ -1301,14 +1413,15 @@ def api_upload():
         save_path = pending_dir / clean_name
 
     file.save(str(save_path))
+    unmark_file_deleted(g.user, 'pending', clean_name)
 
-    # Sync to GitHub pending folder for persistence across container restarts
+    # Sync to user's isolated GitHub pending folder for persistence across container restarts
     gh_cfg = get_github_config(g.user)
     if gh_cfg.get('is_configured'):
         try:
             with open(save_path, 'rb') as pf:
                 pdf_bytes = pf.read()
-            github_upload_file(f"pending/{clean_name}", pdf_bytes, commit_msg=f"Upload pending document {clean_name} via IT Signer", user=g.user)
+            github_upload_file(f"pending/{username}/{clean_name}", pdf_bytes, commit_msg=f"Upload pending document {clean_name} for {username}", user=g.user)
         except Exception as ge:
             print(f"Notice: could not sync uploaded pending PDF to GitHub: {ge}")
 
@@ -1317,25 +1430,27 @@ def api_upload():
     return jsonify({
         "success": True, 
         "filename": clean_name,
-        "sign_url": f"/sign/{clean_name}{token_q}"
+        "sign_url": f"/sign/{urllib.parse.quote(clean_name)}{token_q}"
     })
 
 @app.route('/api/sign/<path:filename>', methods=['POST'])
 @login_required
 def api_sign(filename):
     """
-    Overlay signature PNG onto PDF using PyMuPDF and save to user's signed folder.
-    Supports single or dual signature (role: 'recipient' | 'issuer' | 'both').
+    Overlay signature PNG onto PDF using PyMuPDF, save to user's signed (Completed) folder,
+    and move/remove the original document from Pending so it transitions cleanly to Completed.
     """
     config = get_user_config(g.user)
     pending_dir = get_resolved_path(config.get('pending_dir'))
     signed_dir = get_resolved_path(config.get('signed_dir'))
     archive_dir = get_resolved_path(config.get('archive_dir'))
+    username = g.user['username']
 
-    source_path = pending_dir / filename
-    if not source_path.exists():
+    source_path = ensure_file_on_disk('pending', filename, g.user)
+    if not source_path or not source_path.exists():
         return jsonify({"success": False, "error": f"Pending file '{filename}' not found in your workspace."}), 404
 
+    clean_source_name = source_path.name
     data = request.get_json(silent=True) or {}
     role = data.get('role', 'recipient').lower()  # 'recipient', 'issuer', or 'both'
     signature_data_url = data.get('signature', '')
@@ -1436,28 +1551,27 @@ def api_sign(filename):
             signed_filename = f"{stem}_signed_{ts_file}.pdf"
             output_path = signed_dir / signed_filename
 
-        # Save signed document into user's signed folder
+        # Save signed document into user's signed (Completed) folder
         doc.save(str(output_path), garbage=4, deflate=True)
         doc.close()
+        unmark_file_deleted(g.user, 'signed', signed_filename)
 
-        # Archive pending original file (disabled by default so pending documents stay in workspace)
-        if config.get('auto_archive_pending', False):
-            try:
+        # Always move/remove the signed document out of Pending so it moves to Completed!
+        mark_file_deleted(g.user, 'pending', clean_source_name)
+        try:
+            if config.get('auto_archive_pending', True):
                 archive_dir.mkdir(parents=True, exist_ok=True)
-                archived_path = archive_dir / source_path.name
+                archived_path = archive_dir / clean_source_name
                 if archived_path.exists():
-                    ts_digits = re.sub(r'[^0-9]', '', sig_timestamp)[:14]
-                    ts_file = f"{ts_digits[:8]}_{ts_digits[8:]}" if len(ts_digits) == 14 else datetime.now().strftime('%Y%m%d_%H%M%S')
-                    archived_path = archive_dir / f"{source_path.stem}_{ts_file}.pdf"
-                source_path.rename(archived_path)
-            except Exception as e:
-                print(f"Notice: could not move pending file to archive: {e}")
-                try:
-                    source_path.unlink(missing_ok=True)
-                except Exception:
-                    pass
+                    safe_unlink(archived_path)
+                shutil.move(str(source_path), str(archived_path))
+            else:
+                safe_unlink(source_path)
+        except Exception as e:
+            print(f"Notice: moving pending file to archive failed ({e}), unlinking instead.")
+            safe_unlink(source_path)
 
-        # GitHub Automated Sync (if configured for this user)
+        # GitHub Automated Sync (isolated per user)
         gh_cfg = get_github_config(g.user)
         gh_status = {"uploaded_signed": False, "deleted_pending": False}
         if gh_cfg['is_configured']:
@@ -1465,25 +1579,25 @@ def api_sign(filename):
                 try:
                     with open(output_path, 'rb') as sf:
                         signed_bytes = sf.read()
-                    github_upload_file(f"signed/{signed_filename}", signed_bytes, f"Add signed document: {signed_filename}", user=g.user)
+                    github_upload_file(f"signed/{username}/{signed_filename}", signed_bytes, f"Add signed document: {signed_filename} ({username})", user=g.user)
                     gh_status["uploaded_signed"] = True
                 except Exception as ge:
                     print(f"Notice: could not upload signed PDF to GitHub: {ge}")
 
-            if gh_cfg['auto_delete_github_pending']:
-                try:
-                    github_delete_file(f"pending/{filename}", commit_msg=f"Delete pending signed document: {filename}", user=g.user)
-                    gh_status["deleted_pending"] = True
-                except Exception as ge:
-                    print(f"Notice: could not delete pending PDF from GitHub: {ge}")
+            # Always remove pending document from GitHub once signed so it doesn't return to Pending
+            try:
+                gh_status["deleted_pending"] = github_delete_user_document('pending', clean_source_name, user=g.user)
+            except Exception as ge:
+                print(f"Notice: could not delete pending PDF from GitHub: {ge}")
 
         token = g.user.get('quick_access_token', '')
         token_q = f"?token={token}" if token else ""
+        encoded_signed = urllib.parse.quote(signed_filename)
         return jsonify({
             "success": True, 
             "filename": signed_filename,
-            "download_url": f"/download/signed/{signed_filename}{token_q}",
-            "preview_url": f"/api/preview/signed/{signed_filename}/1{token_q}",
+            "download_url": f"/download/signed/{encoded_signed}{token_q}",
+            "preview_url": f"/api/preview/signed/{encoded_signed}/1{token_q}",
             "github_sync": gh_status
         })
 
@@ -1502,7 +1616,7 @@ def download_file(folder_type, filename):
     if not file_path or not file_path.exists():
         return render_template('error.html',
                                title="Document Not Found",
-                               message=f"The requested document '{filename}' was not found on the server or in the GitHub repository."), 404
+                               message=f"The requested document '{filename}' was not found in your workspace."), 404
 
     clean_name = file_path.name
     return send_file(
@@ -1516,7 +1630,10 @@ def download_file(folder_type, filename):
 @app.route('/api/delete/<folder_type>/<path:filename>', methods=['POST', 'DELETE'])
 @login_required
 def api_delete_document(folder_type, filename):
-    """Delete a document from user's pending, signed, or archive folder, with optional GitHub deletion."""
+    """
+    Reliably delete a document from user's pending, signed, or archive folder,
+    record it in the deleted tracker so it never resurrects, and remove it from GitHub.
+    """
     config = get_user_config(g.user)
     if folder_type == 'pending':
         target_dir = get_resolved_path(config.get('pending_dir'))
@@ -1530,45 +1647,69 @@ def api_delete_document(folder_type, filename):
     clean_name = Path(filename).name
     file_path = target_dir / clean_name
 
+    # Also match case-insensitively if exact path wasn't found
+    if not file_path.exists() and target_dir.exists():
+        for entry in target_dir.iterdir():
+            if entry.is_file() and entry.name.lower() == clean_name.lower():
+                file_path = entry
+                clean_name = entry.name
+                break
+
+    # Mark as deleted BEFORE unlinking so any concurrent sync ignores it
+    if folder_type in ('pending', 'signed'):
+        mark_file_deleted(g.user, folder_type, clean_name)
+
     deleted_local = False
     if file_path.exists():
         try:
-            file_path.unlink()
-            deleted_local = True
+            deleted_local = safe_unlink(file_path)
         except Exception as e:
             return jsonify({"success": False, "error": f"Failed to delete local file: {str(e)}"}), 500
 
-    delete_github = request.args.get('delete_github', 'false').lower() == 'true'
+    # If deleting a pending document, also clean up archive copy if any
+    if folder_type == 'pending':
+        archive_dir = get_resolved_path(config.get('archive_dir'))
+        arch_file = archive_dir / clean_name
+        if arch_file.exists():
+            try:
+                safe_unlink(arch_file)
+            except Exception:
+                pass
+
+    # Always remove from GitHub as well so it never comes back on future syncs
     gh_deleted = False
     gh_error = None
-
-    if delete_github and folder_type in ('pending', 'signed'):
-        gh_cfg = get_github_config(g.user)
-        if gh_cfg['is_configured']:
-            try:
-                github_delete_file(f"{folder_type}/{clean_name}", user=g.user)
-                gh_deleted = True
-            except Exception as ge:
-                gh_error = str(ge)
-
-    if not deleted_local and not gh_deleted:
-        return jsonify({"success": False, "error": f"File '{clean_name}' not found locally."}), 404
+    if folder_type in ('pending', 'signed'):
+        try:
+            gh_deleted = github_delete_user_document(folder_type, clean_name, user=g.user)
+        except Exception as ge:
+            gh_error = str(ge)
 
     return jsonify({
         "success": True, 
-        "message": f"Deleted {clean_name}" + (" and removed from GitHub" if gh_deleted else ""),
+        "message": f"Deleted {clean_name}",
         "deleted_local": deleted_local,
         "deleted_github": gh_deleted,
         "github_error": gh_error
     })
 
 
-# ----------------- GITHUB INTEGRATION ENDPOINTS -----------------
+# ----------------- GITHUB INTEGRATION ENDPOINTS (ADMIN ONLY) -----------------
 
 @app.route('/api/github/status')
 @login_required
 def api_github_status():
-    """Get status of GitHub integration for current user."""
+    """Get status of GitHub integration (visible to admin only)."""
+    if not db.is_admin_user(g.user):
+        return jsonify({
+            "is_configured": False,
+            "hidden": True,
+            "repo": "",
+            "branch": "data",
+            "auto_delete_pending": True,
+            "auto_upload_signed": True,
+            "has_token": False
+        })
     gh = get_github_config(g.user)
     return jsonify({
         "is_configured": gh["is_configured"],
@@ -1583,6 +1724,8 @@ def api_github_status():
 @login_required
 def api_github_test():
     """Test GitHub connection with repository and token."""
+    if not db.is_admin_user(g.user):
+        return jsonify({"success": False, "error": "Administrator access required."}), 403
     data = request.get_json(silent=True) or {}
     repo = data.get('repo')
     token = data.get('token')
@@ -1592,8 +1735,10 @@ def api_github_test():
 @app.route('/api/github/sync-now', methods=['POST'])
 @login_required
 def api_github_sync_now():
-    """Immediately force sync of all pending and signed documents from GitHub to local disk."""
+    """Immediately force sync of current user's pending and signed documents from GitHub."""
     try:
+        unmark_file_deleted(g.user, 'pending', None)
+        unmark_file_deleted(g.user, 'signed', None)
         sync_from_github_if_needed(g.user, force=True)
         return jsonify({"success": True, "message": "Successfully synchronized documents from GitHub."})
     except Exception as e:
@@ -1602,12 +1747,14 @@ def api_github_sync_now():
 @app.route('/api/github/pending')
 @login_required
 def api_github_pending():
-    """List all files in GitHub repo pending/ folder for current user."""
+    """List files in GitHub repo pending/ folder (admin only)."""
+    if not db.is_admin_user(g.user):
+        return jsonify({"success": True, "files": [], "count": 0})
     gh = get_github_config(g.user)
     if not gh.get('repo'):
         return jsonify({"success": False, "error": "GitHub repository is not configured.", "files": []})
     try:
-        files = github_list_pending_files(user=g.user)
+        files = github_list_pending_files(user=g.user, include_root_for_admin=True)
         return jsonify({"success": True, "files": files, "repo": gh['repo'], "branch": gh['branch'], "count": len(files)})
     except Exception as e:
         return jsonify({"success": False, "error": str(e), "files": []}), 500
@@ -1616,28 +1763,20 @@ def api_github_pending():
 @login_required
 def api_github_delete_pending(filename):
     """Delete a specific file from GitHub pending/ folder across branches, and clean up local copy."""
+    if not db.is_admin_user(g.user):
+        return jsonify({"success": False, "error": "Administrator access required."}), 403
     gh = get_github_config(g.user)
     if not gh['is_configured']:
         return jsonify({"success": False, "error": "GitHub is not configured with repository & token."}), 400
     try:
         clean_name = Path(filename).name
-        github_delete_file(f"pending/{clean_name}", user=g.user)
+        mark_file_deleted(g.user, 'pending', clean_name)
+        github_delete_user_document('pending', clean_name, user=g.user)
 
-        # Also remove local copy from pending directory if present
         config = get_user_config(g.user)
         pending_dir = get_resolved_path(config.get('pending_dir'))
-        local_f = pending_dir / clean_name
-        if local_f.exists():
-            try:
-                local_f.unlink()
-            except Exception:
-                pass
-        root_f = BASE_DIR / 'pending' / clean_name
-        if root_f.exists():
-            try:
-                root_f.unlink()
-            except Exception:
-                pass
+        safe_unlink(pending_dir / clean_name)
+        safe_unlink(BASE_DIR / 'pending' / clean_name)
 
         return jsonify({"success": True, "message": f"Deleted {clean_name} from GitHub pending folder."})
     except Exception as e:
@@ -1647,11 +1786,13 @@ def api_github_delete_pending(filename):
 @login_required
 def api_github_clear_pending():
     """Delete all files from GitHub pending/ folder in batch across branches."""
+    if not db.is_admin_user(g.user):
+        return jsonify({"success": False, "error": "Administrator access required."}), 403
     gh = get_github_config(g.user)
     if not gh['is_configured']:
         return jsonify({"success": False, "error": "GitHub is not configured with repository & token."}), 400
     try:
-        files = github_list_pending_files(user=g.user)
+        files = github_list_pending_files(user=g.user, include_root_for_admin=True)
         if not files:
             return jsonify({"success": True, "deleted_count": 0, "message": "GitHub pending folder is already empty."})
 
@@ -1659,6 +1800,7 @@ def api_github_clear_pending():
         errors = []
         for f in files:
             try:
+                mark_file_deleted(g.user, 'pending', f['name'])
                 github_delete_file(f['path'], user=g.user, branch=f.get('branch'))
                 deleted += 1
             except Exception as ge:
@@ -1676,12 +1818,14 @@ def api_github_clear_pending():
 @app.route('/api/github/signed')
 @login_required
 def api_github_signed():
-    """List all files in GitHub repo signed/ folder for current user."""
+    """List all files in GitHub repo signed/ folder (admin only)."""
+    if not db.is_admin_user(g.user):
+        return jsonify({"success": True, "files": [], "count": 0})
     gh = get_github_config(g.user)
     if not gh.get('repo'):
         return jsonify({"success": False, "error": "GitHub repository is not configured.", "files": []})
     try:
-        files = github_list_signed_files(user=g.user)
+        files = github_list_signed_files(user=g.user, include_root_for_admin=True)
         return jsonify({"success": True, "files": files, "repo": gh['repo'], "branch": gh['branch'], "count": len(files)})
     except Exception as e:
         return jsonify({"success": False, "error": str(e), "files": []}), 500
@@ -1690,12 +1834,15 @@ def api_github_signed():
 @login_required
 def api_github_delete_signed(filename):
     """Delete a specific file from GitHub signed/ folder across branches."""
+    if not db.is_admin_user(g.user):
+        return jsonify({"success": False, "error": "Administrator access required."}), 403
     gh = get_github_config(g.user)
     if not gh['is_configured']:
         return jsonify({"success": False, "error": "GitHub is not configured with repository & token."}), 400
     try:
         clean_name = Path(filename).name
-        github_delete_file(f"signed/{clean_name}", user=g.user)
+        mark_file_deleted(g.user, 'signed', clean_name)
+        github_delete_user_document('signed', clean_name, user=g.user)
         return jsonify({"success": True, "message": f"Deleted {clean_name} from GitHub signed folder."})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
@@ -1704,11 +1851,13 @@ def api_github_delete_signed(filename):
 @login_required
 def api_github_clear_signed():
     """Delete all files from GitHub signed/ folder in batch across branches."""
+    if not db.is_admin_user(g.user):
+        return jsonify({"success": False, "error": "Administrator access required."}), 403
     gh = get_github_config(g.user)
     if not gh['is_configured']:
         return jsonify({"success": False, "error": "GitHub is not configured with repository & token."}), 400
     try:
-        files = github_list_signed_files(user=g.user)
+        files = github_list_signed_files(user=g.user, include_root_for_admin=True)
         if not files:
             return jsonify({"success": True, "deleted_count": 0, "message": "GitHub signed folder is already empty."})
 
@@ -1716,6 +1865,7 @@ def api_github_clear_signed():
         errors = []
         for f in files:
             try:
+                mark_file_deleted(g.user, 'signed', f['name'])
                 github_delete_file(f['path'], user=g.user, branch=f.get('branch'))
                 deleted += 1
             except Exception as ge:
@@ -1736,7 +1886,7 @@ def api_github_clear_signed():
 @app.route('/api/clear/<folder_type>', methods=['POST'])
 @login_required
 def api_clear_folder(folder_type):
-    """Clear all PDF files in current user's folder."""
+    """Clear all PDF files in current user's folder (and remove from user's GitHub folder so they don't return)."""
     config = get_user_config(g.user)
     if folder_type == 'signed':
         target_dir = get_resolved_path(config.get('signed_dir'))
@@ -1748,11 +1898,31 @@ def api_clear_folder(folder_type):
         return jsonify({"success": False, "error": "Invalid folder type"}), 400
 
     deleted_count = 0
+    deleted_names = []
     if target_dir.exists():
-        for f in target_dir.glob('*.pdf'):
+        for f in list(target_dir.glob('*.pdf')):
             try:
-                f.unlink()
-                deleted_count += 1
+                fname = f.name
+                if folder_type in ('pending', 'signed'):
+                    mark_file_deleted(g.user, folder_type, fname)
+                if safe_unlink(f):
+                    deleted_count += 1
+                    deleted_names.append(fname)
+            except Exception as e:
+                print(f"Error clearing file {f}: {e}")
+
+    # Also clear user's corresponding files on GitHub so they never resurrect
+    if folder_type in ('pending', 'signed'):
+        gh = get_github_config(g.user)
+        if gh.get('is_configured'):
+            try:
+                gh_files = github_list_folder_files(folder_type, user=g.user, include_root_for_admin=False)
+                for gf in gh_files:
+                    try:
+                        mark_file_deleted(g.user, folder_type, gf['name'])
+                        github_delete_file(gf['path'], user=g.user, branch=gf.get('branch'))
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
@@ -1799,10 +1969,16 @@ def api_download_all_zip(folder_type):
 @login_required
 def api_config():
     """Get or update application settings for the currently authenticated user."""
+    is_admin = db.is_admin_user(g.user)
     if request.method == 'POST':
         new_config = request.get_json(silent=True)
         if not new_config:
             return jsonify({"success": False, "error": "Invalid JSON"}), 400
+
+        # Non-admin users cannot overwrite GitHub repo/token settings
+        if not is_admin:
+            for k in ('github_repo', 'github_token', 'github_branch', 'auto_delete_github_pending', 'auto_upload_github_signed'):
+                new_config.pop(k, None)
 
         # Save user settings in SQLite database
         ok, res = db.update_user_settings(g.user['id'], new_config)
@@ -1815,13 +1991,21 @@ def api_config():
         current['username'] = g.user['username']
         current['display_name'] = g.user['display_name']
         current['quick_access_token'] = g.user['quick_access_token']
+        current['is_admin'] = is_admin
+        if not is_admin:
+            current.pop('github_token', None)
+            current.pop('github_repo', None)
 
-        # If GitHub credentials were provided or restored, trigger sync immediately
-        if new_config.get('github_token') or new_config.get('github_repo'):
+        if is_admin and (new_config.get('github_token') or new_config.get('github_repo')):
             try:
                 sync_from_github_if_needed(g.user, force=True)
             except Exception as se:
                 print(f"Notice: initial sync after config update: {se}")
+
+        try:
+            sync_users_to_cloud(g.user)
+        except Exception:
+            pass
 
         return jsonify({"success": True, "config": current})
 
@@ -1829,6 +2013,11 @@ def api_config():
     cfg['username'] = g.user['username']
     cfg['display_name'] = g.user['display_name']
     cfg['quick_access_token'] = g.user['quick_access_token']
+    cfg['is_admin'] = is_admin
+    if not is_admin:
+        cfg.pop('github_token', None)
+        cfg.pop('github_repo', None)
+        cfg.pop('secret_key', None)
     return jsonify(cfg)
 
 @app.route('/api/user/token/regenerate', methods=['POST'])
@@ -1837,6 +2026,10 @@ def api_regenerate_token():
     """Generate a fresh quick-access/API token for current user."""
     new_token = db.regenerate_user_token(g.user['id'])
     g.user['quick_access_token'] = new_token
+    try:
+        sync_users_to_cloud(g.user)
+    except Exception:
+        pass
     return jsonify({"success": True, "token": new_token})
 
 @app.route('/api/user/profile', methods=['POST'])
