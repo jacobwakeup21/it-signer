@@ -20,8 +20,8 @@ let calibCoords = {
     issuer: { x: 60, y: 630, width: 200, height: 70 }
 };
 
-// GitHub Integration State
-let gitHubConfig = { is_configured: false, repo: '', branch: 'main' };
+// GitHub Integration State (Admin Only)
+let gitHubConfig = { is_configured: false, repo: '', branch: 'data' };
 let gitHubPendingFiles = [];
 let gitHubSignedFiles = [];
 let currentGitHubTab = 'pending'; // 'pending' or 'signed'
@@ -36,12 +36,16 @@ document.addEventListener('DOMContentLoaded', () => {
     initDropZone();
     initCalibratorInteractions();
     refreshDocuments();
-    checkGitHubStatus();
     initLocalAutoSave();
-    
-    // Auto-refresh document list every 5 seconds & GitHub status every 15s
+
+    // Auto-refresh document list every 5 seconds
     setInterval(refreshDocuments, 5000);
-    setInterval(checkGitHubStatus, 15000);
+
+    // Only check GitHub status for administrator account
+    if (window.isAdminUser) {
+        checkGitHubStatus();
+        setInterval(checkGitHubStatus, 15000);
+    }
 });
 
 function formatLocalTime(epochSec, fallbackStr) {
@@ -130,8 +134,10 @@ async function refreshDocuments() {
         pendingFiles = data.pending || [];
         signedFiles = data.signed || [];
 
-        document.getElementById('pendingCountBadge').textContent = `${pendingFiles.length} file${pendingFiles.length === 1 ? '' : 's'}`;
-        document.getElementById('signedCountBadge').textContent = `${signedFiles.length} file${signedFiles.length === 1 ? '' : 's'}`;
+        const pBadge = document.getElementById('pendingCountBadge');
+        if (pBadge) pBadge.textContent = `${pendingFiles.length} file${pendingFiles.length === 1 ? '' : 's'}`;
+        const sBadge = document.getElementById('signedCountBadge');
+        if (sBadge) sBadge.textContent = `${signedFiles.length} file${signedFiles.length === 1 ? '' : 's'}`;
 
         sortAndRenderDocuments();
         triggerAutoSaveForNewDocs(signedFiles);
@@ -176,10 +182,10 @@ function renderPendingGrid(files) {
     const container = document.getElementById('pendingContainer');
     if (!files || files.length === 0) {
         container.innerHTML = `
-            <div class="col-span-full bg-[#0b1329]/60 border border-cyan-500/20 rounded-2xl p-8 text-center space-y-2 shadow-xl">
-                <i data-lucide="folder-open" class="w-8 h-8 mx-auto text-cyan-400/60"></i>
-                <h4 class="text-sm font-semibold text-slate-200">${searchTerm ? 'No matching pending files' : 'No pending files'}</h4>
-                <p class="text-xs text-slate-400">${searchTerm ? 'Try adjusting your search query.' : 'Drag and drop a PDF file above or place it into the pending folder.'}</p>
+            <div class="col-span-full bg-[#0b1329]/60 border border-cyan-500/20 rounded-2xl p-6 text-center space-y-1.5 shadow-xl">
+                <i data-lucide="folder-open" class="w-7 h-7 mx-auto text-cyan-400/60"></i>
+                <h4 class="text-sm font-semibold text-slate-200">${searchTerm ? 'No matching pending files' : 'No pending documents'}</h4>
+                <p class="text-xs text-slate-400">${searchTerm ? 'Try adjusting your search query.' : 'Upload a PDF document above to start signing.'}</p>
             </div>
         `;
         if (window.lucide) lucide.createIcons();
@@ -189,7 +195,9 @@ function renderPendingGrid(files) {
     container.innerHTML = files.map(file => {
         const token = window.currentUserToken || '';
         const tokenQuery = token ? `?token=${encodeURIComponent(token)}` : '';
-        const directSignUrl = `${getBaseUrl()}/sign/${encodeURIComponent(file.name)}${tokenQuery}`;
+        const encodedName = encodeURIComponent(file.name);
+        const directSignUrl = `${getBaseUrl()}/sign/${encodedName}${tokenQuery}`;
+        const previewSep = file.preview_url.includes('?') ? '&' : '?';
         const meta = file.metadata || {};
         const employeeName = meta.employee_name;
         const hwFirst = meta.hardware && meta.hardware.length > 0 ? meta.hardware[0] : null;
@@ -198,8 +206,10 @@ function renderPendingGrid(files) {
         <div class="doc-card bg-[#0b1329]/90 border border-cyan-500/25 hover:border-cyan-400/50 rounded-2xl p-4 shadow-xl shadow-cyan-950/25 flex flex-col justify-between space-y-3 transition">
             <div class="flex items-start gap-3">
                 <!-- Thumbnail -->
-                <div class="w-16 h-20 bg-[#070c18] rounded-lg overflow-hidden border border-cyan-500/30 flex-shrink-0 relative group cursor-pointer" onclick="openPdfPreview('pending', '${file.name}', '${file.preview_url}')">
-                    <img src="${file.preview_url}?zoom=0.8" alt="${file.name}" class="w-full h-full object-cover">
+                <div class="w-16 h-20 bg-[#070c18] rounded-lg overflow-hidden border border-cyan-500/30 flex-shrink-0 relative group cursor-pointer"
+                     data-filename="${encodedName}" data-preview="${encodeURIComponent(file.preview_url)}"
+                     onclick="openPdfPreview('pending', decodeURIComponent(this.getAttribute('data-filename')), decodeURIComponent(this.getAttribute('data-preview')))">
+                    <img src="${file.preview_url}${previewSep}zoom=0.8" alt="${file.name}" class="w-full h-full object-cover">
                     <div class="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
                         <i data-lucide="zoom-in" class="w-4 h-4 text-cyan-300"></i>
                     </div>
@@ -237,19 +247,21 @@ function renderPendingGrid(files) {
 
             <!-- Action buttons -->
             <div class="pt-2 border-t border-cyan-500/15 flex items-center gap-1.5">
-                <button onclick="showDocQr('${file.name}', '${directSignUrl}')" class="flex-1 py-1.5 bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-400/30 rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1 shadow-sm">
+                <button data-filename="${encodedName}" data-signurl="${encodeURIComponent(directSignUrl)}"
+                        onclick="showDocQr(decodeURIComponent(this.getAttribute('data-filename')), decodeURIComponent(this.getAttribute('data-signurl')))"
+                        class="flex-1 py-1.5 bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-400/30 rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1 shadow-sm">
                     <i data-lucide="qr-code" class="w-3.5 h-3.5"></i> QR
                 </button>
-                <a href="${directSignUrl}" class="flex-1 py-1.5 bg-[#101c3d] hover:bg-[#182b5c] text-white border border-cyan-500/30 rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1">
-                    <i data-lucide="pen" class="w-3.5 h-3.5 text-cyan-400"></i> Sign
+                <a href="${directSignUrl}" class="flex-1 py-1.5 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white rounded-lg text-xs font-bold transition flex items-center justify-center gap-1 shadow">
+                    <i data-lucide="pen" class="w-3.5 h-3.5"></i> Sign
                 </a>
-                <button onclick="openCalibratorModal('${file.name}')" class="p-1.5 bg-[#101c3d] hover:bg-[#182b5c] text-cyan-300 border border-cyan-500/20 rounded-lg text-xs transition" title="Calibrate placement on this PDF">
+                <button data-filename="${encodedName}" onclick="openCalibratorModal(decodeURIComponent(this.getAttribute('data-filename')))" class="p-1.5 bg-[#101c3d] hover:bg-[#182b5c] text-cyan-300 border border-cyan-500/20 rounded-lg text-xs transition" title="Calibrate placement on this PDF">
                     <i data-lucide="move" class="w-3.5 h-3.5"></i>
                 </button>
                 <a href="${file.download_url}" download="${file.name}" target="_blank" class="p-1.5 bg-[#101c3d] hover:bg-[#182b5c] text-cyan-300 border border-cyan-500/20 rounded-lg text-xs transition" title="Download original">
                     <i data-lucide="download" class="w-3.5 h-3.5"></i>
                 </a>
-                <button data-filename="${encodeURIComponent(file.name)}" onclick="deleteDocument('pending', decodeURIComponent(this.getAttribute('data-filename')))" class="p-1.5 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 rounded-lg text-xs transition" title="Delete file">
+                <button data-filename="${encodedName}" onclick="deleteDocument('pending', decodeURIComponent(this.getAttribute('data-filename')))" class="px-2.5 py-1.5 bg-rose-600/20 hover:bg-rose-600/40 text-rose-300 hover:text-white border border-rose-500/35 rounded-lg text-xs font-semibold transition flex items-center gap-1" title="Delete pending document">
                     <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
                 </button>
             </div>
@@ -264,10 +276,10 @@ function renderSignedGrid(files) {
     const container = document.getElementById('signedContainer');
     if (!files || files.length === 0) {
         container.innerHTML = `
-            <div class="col-span-full bg-[#0b1329]/60 border border-cyan-500/20 rounded-2xl p-8 text-center space-y-2 shadow-xl">
-                <i data-lucide="check-circle" class="w-8 h-8 mx-auto text-emerald-400/60"></i>
-                <h4 class="text-sm font-semibold text-slate-200">${searchTerm ? 'No matching signed documents' : 'No signed documents yet'}</h4>
-                <p class="text-xs text-slate-400">${searchTerm ? 'Try adjusting your search query.' : 'Signed PDFs with embedded signatures will automatically appear here.'}</p>
+            <div class="col-span-full bg-[#0b1329]/60 border border-cyan-500/20 rounded-2xl p-6 text-center space-y-1.5 shadow-xl">
+                <i data-lucide="check-circle" class="w-7 h-7 mx-auto text-emerald-400/60"></i>
+                <h4 class="text-sm font-semibold text-slate-200">${searchTerm ? 'No matching completed documents' : 'No completed documents yet'}</h4>
+                <p class="text-xs text-slate-400">${searchTerm ? 'Try adjusting your search query.' : 'When you sign a pending document, it automatically moves here to Completed.'}</p>
             </div>
         `;
         if (window.lucide) lucide.createIcons();
@@ -277,13 +289,18 @@ function renderSignedGrid(files) {
     container.innerHTML = files.map(file => {
         const meta = file.metadata || {};
         const employeeName = meta.employee_name;
+        const encodedName = encodeURIComponent(file.name);
+        const targetPreview = file.last_page_preview_url || file.preview_url;
+        const previewSep = targetPreview.includes('?') ? '&' : '?';
 
         return `
         <div class="doc-card bg-[#0b1329]/90 border border-emerald-500/30 hover:border-emerald-400/50 rounded-2xl p-4 shadow-xl shadow-emerald-950/20 flex flex-col justify-between space-y-3 transition">
             <div class="flex items-start gap-3">
                 <!-- Thumbnail showing signature -->
-                <div class="w-16 h-20 bg-[#070c18] rounded-lg overflow-hidden border border-emerald-500/30 flex-shrink-0 relative group cursor-pointer" onclick="openPdfPreview('signed', '${file.name}', '${file.last_page_preview_url || file.preview_url}')">
-                    <img src="${file.last_page_preview_url || file.preview_url}?zoom=0.8" alt="${file.name}" class="w-full h-full object-cover">
+                <div class="w-16 h-20 bg-[#070c18] rounded-lg overflow-hidden border border-emerald-500/30 flex-shrink-0 relative group cursor-pointer"
+                     data-filename="${encodedName}" data-preview="${encodeURIComponent(targetPreview)}"
+                     onclick="openPdfPreview('signed', decodeURIComponent(this.getAttribute('data-filename')), decodeURIComponent(this.getAttribute('data-preview')))">
+                    <img src="${targetPreview}${previewSep}zoom=0.8" alt="${file.name}" class="w-full h-full object-cover">
                     <div class="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
                         <i data-lucide="zoom-in" class="w-4 h-4 text-emerald-300"></i>
                     </div>
@@ -304,23 +321,27 @@ function renderSignedGrid(files) {
 
                     <div class="flex items-center gap-2 mt-2">
                         <span class="px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 text-[10px] font-semibold flex items-center gap-1 border border-emerald-500/30">
-                            <i data-lucide="check" class="w-3 h-3"></i> Signed
+                            <i data-lucide="check" class="w-3 h-3"></i> Completed
                         </span>
                         <span class="text-[10px] text-slate-400 font-mono">${file.size_formatted}</span>
                     </div>
                 </div>
             </div>
 
-            <!-- Action buttons -->
-            <div class="pt-2 border-t border-emerald-500/20 flex items-center gap-1.5">
-                <a href="${file.download_url}" download="${file.name}" target="_blank" class="flex-1 py-1.5 bg-gradient-to-r from-emerald-600/20 to-teal-600/20 hover:from-emerald-600/30 hover:to-teal-600/30 text-emerald-300 border border-emerald-500/30 rounded-lg text-xs font-semibold transition flex items-center justify-center gap-1.5 shadow-sm">
+            <!-- Action buttons (with slightly bigger Clear button) -->
+            <div class="pt-2 border-t border-emerald-500/20 flex items-center gap-2">
+                <a href="${file.download_url}" download="${file.name}" target="_blank" class="flex-1 py-2 bg-gradient-to-r from-emerald-600/25 to-teal-600/25 hover:from-emerald-600/40 hover:to-teal-600/40 text-emerald-300 hover:text-white border border-emerald-500/35 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 shadow-sm">
                     <i data-lucide="download" class="w-3.5 h-3.5"></i> Download PDF
                 </a>
-                <button onclick="openPdfPreview('signed', '${file.name}', '${file.last_page_preview_url || file.preview_url}')" class="p-1.5 bg-[#101c3d] hover:bg-[#182b5c] text-cyan-300 border border-cyan-500/20 rounded-lg text-xs transition" title="Preview document">
-                    <i data-lucide="eye" class="w-3.5 h-3.5"></i>
+                <button data-filename="${encodedName}" data-preview="${encodeURIComponent(targetPreview)}"
+                        onclick="openPdfPreview('signed', decodeURIComponent(this.getAttribute('data-filename')), decodeURIComponent(this.getAttribute('data-preview')))"
+                        class="p-2 bg-[#101c3d] hover:bg-[#182b5c] text-cyan-300 border border-cyan-500/20 rounded-xl text-xs transition" title="Preview document">
+                    <i data-lucide="eye" class="w-4 h-4"></i>
                 </button>
-                <button onclick="deleteDocument('signed', '${file.name}')" class="p-1.5 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/30 rounded-lg text-xs transition" title="Remove signed document">
+                <button data-filename="${encodedName}" onclick="deleteDocument('signed', decodeURIComponent(this.getAttribute('data-filename')))"
+                        class="px-3.5 py-2 bg-rose-600/25 hover:bg-rose-600 text-rose-200 hover:text-white border border-rose-500/40 rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-sm" title="Clear / delete this completed document">
                     <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                    <span>Clear</span>
                 </button>
             </div>
         </div>
@@ -331,31 +352,20 @@ function renderSignedGrid(files) {
 }
 
 async function deleteDocument(folder, filename) {
-    let deleteFromGh = false;
-    let confirmMsg = `Are you sure you want to remove "${filename}"?`;
-    
-    if (folder === 'pending' && gitHubConfig && gitHubConfig.is_configured) {
-        confirmMsg = `Remove "${filename}" from pending documents?`;
-    } else if (folder === 'signed' && gitHubConfig && gitHubConfig.is_configured) {
-        confirmMsg = `Remove "${filename}" from signed documents?`;
-    }
-
-    if (!confirm(confirmMsg)) {
+    const label = folder === 'signed' ? 'completed' : 'pending';
+    if (!confirm(`Remove "${filename}" from your ${label} documents?`)) {
         return;
     }
 
-    if ((folder === 'pending' || folder === 'signed') && gitHubConfig && gitHubConfig.is_configured) {
-        deleteFromGh = confirm(`Do you also want to delete "${filename}" from the GitHub repository?`);
-    }
-
     try {
-        const res = await fetch(`/api/delete/${folder}/${encodeURIComponent(filename)}?delete_github=${deleteFromGh}`, {
+        const res = await fetch(`/api/delete/${folder}/${encodeURIComponent(filename)}?delete_github=true`, {
             method: 'POST'
         });
         const data = await res.json();
         if (data.success) {
-            refreshDocuments();
-            if (gitHubConfig && gitHubConfig.is_configured) checkGitHubStatus();
+            showToast(`Removed "${filename}"`);
+            await refreshDocuments();
+            if (window.isAdminUser) checkGitHubStatus();
         } else {
             alert(`Error deleting document: ${data.error}`);
         }
@@ -365,24 +375,17 @@ async function deleteDocument(folder, filename) {
 }
 
 async function clearAllPendingDocs() {
-    if (!confirm('Are you sure you want to remove ALL local pending documents?')) {
+    if (!confirm('Are you sure you want to clear ALL of your pending documents?')) {
         return;
     }
 
-    let clearGh = false;
-    if (gitHubConfig && gitHubConfig.is_configured) {
-        clearGh = confirm('Do you also want to clear all pending files from the GitHub repository?');
-    }
-
     try {
-        if (clearGh) {
-            await fetch('/api/github/clear-pending', { method: 'POST' });
-        }
         const res = await fetch('/api/clear/pending', { method: 'POST' });
         const data = await res.json();
         if (data.success) {
-            refreshDocuments();
-            if (gitHubConfig && gitHubConfig.is_configured) checkGitHubStatus();
+            showToast(`Cleared ${data.count || 0} pending document(s)`);
+            await refreshDocuments();
+            if (window.isAdminUser) checkGitHubStatus();
         } else {
             alert(`Error: ${data.error}`);
         }
@@ -392,36 +395,23 @@ async function clearAllPendingDocs() {
 }
 
 async function clearAllSignedDocs() {
-    if (!confirm('Are you sure you want to remove ALL completed signed documents from the view?')) {
+    if (!confirm('Are you sure you want to clear ALL of your completed documents?')) {
         return;
     }
 
-    let clearGh = false;
-    if (gitHubConfig && gitHubConfig.is_configured) {
-        clearGh = confirm('Do you also want to delete all signed files from the GitHub repository?');
-    }
-
     try {
-        if (clearGh) {
-            await fetch('/api/github/clear-signed', { method: 'POST' });
-        }
         const res = await fetch('/api/clear/signed', { method: 'POST' });
         const data = await res.json();
         if (data.success) {
-            refreshDocuments();
-            if (gitHubConfig && gitHubConfig.is_configured) checkGitHubStatus();
+            showToast(`Cleared ${data.count || 0} completed document(s)`);
+            await refreshDocuments();
+            if (window.isAdminUser) checkGitHubStatus();
         } else {
             alert(`Error: ${data.error}`);
         }
     } catch (err) {
-        alert(`Failed to clear signed documents: ${err.message}`);
+        alert(`Failed to clear completed documents: ${err.message}`);
     }
-}
-
-function setOneDrivePreset() {
-    const defaultOneDrive = 'C:/Users/v-jkuchar/OneDrive - Nokian Tyres/IT_Handover';
-    document.getElementById('setting_pending_dir').value = `${defaultOneDrive}/pending`;
-    document.getElementById('setting_signed_dir').value = `${defaultOneDrive}/signed`;
 }
 
 function initDropZone() {
@@ -435,6 +425,7 @@ function initDropZone() {
     fileInput.addEventListener('change', (e) => {
         if (e.target.files.length > 0) {
             handleFileUpload(e.target.files[0]);
+            fileInput.value = '';
         }
     });
 
@@ -463,8 +454,8 @@ async function handleFileUpload(file) {
     }
 
     const statusEl = document.getElementById('uploadStatus');
-    statusEl.className = 'mt-3 text-xs text-sky-400 font-medium block';
-    statusEl.innerHTML = `<i data-lucide="loader-2" class="w-4 h-4 animate-spin inline mr-1"></i> Uploading ${file.name}...`;
+    statusEl.className = 'mt-1.5 text-xs text-sky-400 font-medium block';
+    statusEl.innerHTML = `<i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin inline mr-1"></i> Uploading ${file.name}...`;
     if (window.lucide) lucide.createIcons();
 
     const formData = new FormData();
@@ -480,15 +471,16 @@ async function handleFileUpload(file) {
         });
         const data = await res.json();
         if (data.success) {
-            statusEl.className = 'mt-3 text-xs text-emerald-400 font-medium block';
-            statusEl.textContent = `✓ Uploaded ${data.filename} to ./pending`;
-            refreshDocuments();
+            statusEl.className = 'mt-1.5 text-xs text-emerald-400 font-medium block';
+            statusEl.textContent = `✓ Uploaded ${data.filename} to Pending`;
+            await refreshDocuments();
+            if (window.isAdminUser) checkGitHubStatus();
             setTimeout(() => { statusEl.classList.add('hidden'); }, 3000);
         } else {
             throw new Error(data.error || 'Upload failed');
         }
     } catch (err) {
-        statusEl.className = 'mt-3 text-xs text-rose-400 font-medium block';
+        statusEl.className = 'mt-1.5 text-xs text-rose-400 font-medium block';
         statusEl.textContent = `Error: ${err.message}`;
     }
 }
@@ -703,9 +695,11 @@ async function saveCalibratorPlacement() {
         const data = await res.json();
         if (data.success) {
             closeCalibratorModal();
-            alert('Signature box coordinates saved successfully!');
-            document.getElementById('badge_recip_coords').textContent = `${Math.round(calibCoords.recipient.x)}, ${Math.round(calibCoords.recipient.y)} (${Math.round(calibCoords.recipient.width)}×${Math.round(calibCoords.recipient.height)})`;
-            document.getElementById('badge_issuer_coords').textContent = `${Math.round(calibCoords.issuer.x)}, ${Math.round(calibCoords.issuer.y)} (${Math.round(calibCoords.issuer.width)}×${Math.round(calibCoords.issuer.height)})`;
+            showToast('Signature box coordinates saved!');
+            const br = document.getElementById('badge_recip_coords');
+            const bi = document.getElementById('badge_issuer_coords');
+            if (br) br.textContent = `${Math.round(calibCoords.recipient.x)},${Math.round(calibCoords.recipient.y)}`;
+            if (bi) bi.textContent = `${Math.round(calibCoords.issuer.x)},${Math.round(calibCoords.issuer.y)}`;
         }
     } catch (e) {
         alert('Failed to save coordinates: ' + e.message);
@@ -737,13 +731,14 @@ function closeDocQrModal() {
 
 function copyDocQrUrl() {
     navigator.clipboard.writeText(currentDocQrUrl).then(() => {
-        alert('Direct signing link copied to clipboard!');
+        showToast('Direct signing link copied!');
     });
 }
 
 function openPdfPreview(folder, filename, previewUrl) {
     document.getElementById('pdfPreviewTitle').textContent = filename;
-    document.getElementById('pdfPreviewImg').src = `${previewUrl}?zoom=1.8&t=${Date.now()}`;
+    const sep = previewUrl.includes('?') ? '&' : '?';
+    document.getElementById('pdfPreviewImg').src = `${previewUrl}${sep}zoom=1.8&t=${Date.now()}`;
     const token = window.currentUserToken || '';
     const tokenQuery = token ? `?token=${encodeURIComponent(token)}` : '';
     const dlBtn = document.getElementById('pdfPreviewDownloadBtn');
@@ -770,6 +765,7 @@ async function openSettingsModal() {
         const placement = config.signature_placement || {};
         const recip = placement.recipient || placement || {};
         const issuer = placement.issuer || {};
+        const username = window.currentUsername || config.username || 'default';
 
         document.getElementById('setting_x').value = recip.x || 320;
         document.getElementById('setting_y').value = recip.y || 630;
@@ -782,52 +778,39 @@ async function openSettingsModal() {
         document.getElementById('setting_issuer_h').value = issuer.height || 70;
 
         document.getElementById('setting_public_url').value = config.public_url || '';
-        document.getElementById('setting_pending_dir').value = config.pending_dir || 'pending';
-        document.getElementById('setting_signed_dir').value = config.signed_dir || 'signed';
+        document.getElementById('setting_pending_dir').value = config.pending_dir || `pending/${username}`;
+        document.getElementById('setting_signed_dir').value = config.signed_dir || `signed/${username}`;
 
-        // GitHub fields
-        const ghRepoInput = document.getElementById('setting_github_repo');
-        const ghTokenInput = document.getElementById('setting_github_token');
-        const ghBranchInput = document.getElementById('setting_github_branch');
-        const ghAutoDelInput = document.getElementById('setting_gh_auto_delete');
-        const ghAutoUpInput = document.getElementById('setting_gh_auto_upload');
-        const ghTestResult = document.getElementById('ghSettingsTestResult');
-        let repoVal = config.github_repo || '';
-        let tokenVal = config.github_token || '';
-        let branchVal = (config.github_branch && config.github_branch !== 'main') ? config.github_branch : 'data';
+        // GitHub fields (Admin Only)
+        if (window.isAdminUser) {
+            const ghRepoInput = document.getElementById('setting_github_repo');
+            const ghTokenInput = document.getElementById('setting_github_token');
+            const ghBranchInput = document.getElementById('setting_github_branch');
+            const ghAutoDelInput = document.getElementById('setting_gh_auto_delete');
+            const ghAutoUpInput = document.getElementById('setting_gh_auto_upload');
+            const ghTestResult = document.getElementById('ghSettingsTestResult');
+            let repoVal = config.github_repo || '';
+            let tokenVal = config.github_token || '';
+            let branchVal = (config.github_branch && config.github_branch !== 'main') ? config.github_branch : 'data';
 
-        if (!repoVal || !tokenVal) {
-            try {
-                const cached = localStorage.getItem('it_signer_github_sync');
-                if (cached) {
-                    const parsed = JSON.parse(cached);
-                    if (!repoVal && parsed.github_repo) repoVal = parsed.github_repo;
-                    if (!tokenVal && parsed.github_token) tokenVal = parsed.github_token;
-                    if (parsed.github_branch) branchVal = (parsed.github_branch === 'main' ? 'data' : parsed.github_branch);
-                }
-            } catch (e) {}
+            if (ghRepoInput) ghRepoInput.value = repoVal;
+            if (ghTokenInput) ghTokenInput.value = tokenVal;
+            if (ghBranchInput) ghBranchInput.value = branchVal;
+            if (ghAutoDelInput) ghAutoDelInput.checked = config.auto_delete_github_pending !== false;
+            if (ghAutoUpInput) ghAutoUpInput.checked = config.auto_upload_github_signed !== false;
+            if (ghTestResult) ghTestResult.textContent = '';
         }
 
-        if (ghRepoInput) ghRepoInput.value = repoVal;
-        if (ghTokenInput) ghTokenInput.value = tokenVal;
-        if (ghBranchInput) ghBranchInput.value = branchVal;
-        if (ghAutoDelInput) ghAutoDelInput.checked = config.auto_delete_github_pending === true;
-        if (ghAutoUpInput) ghAutoUpInput.checked = config.auto_upload_github_signed !== false;
-        if (ghTestResult) ghTestResult.textContent = '';
-
         document.getElementById('setting_timestamp').checked = recip.add_timestamp !== false;
-        document.getElementById('setting_archive').checked = config.auto_archive_pending === true;
+        document.getElementById('setting_archive').checked = config.auto_archive_pending !== false;
         if (document.getElementById('setting_timezone')) {
             document.getElementById('setting_timezone').value = config.timezone || 'Europe/Prague';
         }
 
-        // Populate User Token & Sync Command
         if (config.quick_access_token) {
             window.currentUserToken = config.quick_access_token;
             const tokenInput = document.getElementById('setting_user_token');
-            const syncInput = document.getElementById('setting_sync_command');
             if (tokenInput) tokenInput.value = config.quick_access_token;
-            if (syncInput) syncInput.value = `powershell -ExecutionPolicy Bypass -File .\\sync_signed_to_pc.ps1 -Token "${config.quick_access_token}"`;
         }
         if (config.display_name) {
             const displayEl = document.getElementById('setting_user_display');
@@ -850,28 +833,17 @@ function closeSettingsModal() {
 
 async function saveSettings(e) {
     e.preventDefault();
+    const username = window.currentUsername || 'default';
     const pubUrl = document.getElementById('setting_public_url').value.trim();
     const pendingDir = document.getElementById('setting_pending_dir').value.trim();
     const signedDir = document.getElementById('setting_signed_dir').value.trim();
     const timezone = document.getElementById('setting_timezone') ? document.getElementById('setting_timezone').value : 'Europe/Prague';
 
-    const ghRepo = (document.getElementById('setting_github_repo') ? document.getElementById('setting_github_repo').value.trim() : '');
-    const ghToken = (document.getElementById('setting_github_token') ? document.getElementById('setting_github_token').value.trim() : '');
-    let ghBranch = (document.getElementById('setting_github_branch') ? document.getElementById('setting_github_branch').value.trim() : 'data') || 'data';
-    if (ghBranch === 'main') ghBranch = 'data';
-    const ghAutoDelete = document.getElementById('setting_gh_auto_delete') ? document.getElementById('setting_gh_auto_delete').checked : false;
-    const ghAutoUpload = document.getElementById('setting_gh_auto_upload') ? document.getElementById('setting_gh_auto_upload').checked : true;
-
     const payload = {
         public_url: pubUrl,
         timezone: timezone,
-        pending_dir: pendingDir || 'pending',
-        signed_dir: signedDir || 'signed',
-        github_repo: ghRepo,
-        github_token: ghToken,
-        github_branch: ghBranch || 'main',
-        auto_delete_github_pending: ghAutoDelete,
-        auto_upload_github_signed: ghAutoUpload,
+        pending_dir: pendingDir || `pending/${username}`,
+        signed_dir: signedDir || `signed/${username}`,
         dual_signature: true,
         signature_placement: {
             recipient: {
@@ -897,8 +869,23 @@ async function saveSettings(e) {
                 timestamp_fontsize: 7.5
             }
         },
-        auto_archive_pending: document.getElementById('setting_archive') ? document.getElementById('setting_archive').checked : false
+        auto_archive_pending: document.getElementById('setting_archive') ? document.getElementById('setting_archive').checked : true
     };
+
+    if (window.isAdminUser) {
+        const ghRepo = (document.getElementById('setting_github_repo') ? document.getElementById('setting_github_repo').value.trim() : '');
+        const ghToken = (document.getElementById('setting_github_token') ? document.getElementById('setting_github_token').value.trim() : '');
+        let ghBranch = (document.getElementById('setting_github_branch') ? document.getElementById('setting_github_branch').value.trim() : 'data') || 'data';
+        if (ghBranch === 'main') ghBranch = 'data';
+        const ghAutoDelete = document.getElementById('setting_gh_auto_delete') ? document.getElementById('setting_gh_auto_delete').checked : true;
+        const ghAutoUpload = document.getElementById('setting_gh_auto_upload') ? document.getElementById('setting_gh_auto_upload').checked : true;
+
+        payload.github_repo = ghRepo;
+        payload.github_token = ghToken;
+        payload.github_branch = ghBranch;
+        payload.auto_delete_github_pending = ghAutoDelete;
+        payload.auto_upload_github_signed = ghAutoUpload;
+    }
 
     try {
         const res = await fetch('/api/config', {
@@ -908,78 +895,32 @@ async function saveSettings(e) {
         });
         const data = await res.json();
         if (data.success) {
-            // Save GitHub config to localStorage as client-side backup against ephemeral cloud resets (Render)
-            try {
-                if (ghRepo && ghToken) {
-                    localStorage.setItem('it_signer_github_sync', JSON.stringify({
-                        github_repo: ghRepo,
-                        github_token: ghToken,
-                        github_branch: ghBranch || 'main',
-                        auto_delete_github_pending: ghAutoDelete,
-                        auto_upload_github_signed: ghAutoUpload
-                    }));
-                } else {
-                    localStorage.removeItem('it_signer_github_sync');
-                }
-            } catch (storageErr) {
-                console.warn('Could not cache GitHub settings in localStorage:', storageErr);
-            }
-
             closeSettingsModal();
             if (data.config && data.config.pending_dir) {
                 const pDirEl = document.getElementById('dropZonePendingDir');
                 if (pDirEl) pDirEl.textContent = data.config.pending_dir;
             }
-            alert('Settings saved successfully!');
+            showToast('Settings saved successfully!');
             if (pubUrl) {
                 currentIp = pubUrl;
                 updateHeroQr();
             }
             refreshDocuments();
-            checkGitHubStatus();
+            if (window.isAdminUser) checkGitHubStatus();
         }
     } catch (err) {
         alert(`Failed to save settings: ${err.message}`);
     }
 }
 
-// ----------------- GITHUB REPOSITORY MANAGER -----------------
+// ----------------- GITHUB REPOSITORY MANAGER (ADMIN ONLY) -----------------
 
 async function checkGitHubStatus() {
+    if (!window.isAdminUser) return;
     try {
-        let res = await fetch('/api/github/status');
-        let data = await res.json();
-
-        // If backend lost config (e.g. Render restarted / spun down), auto-restore from browser localStorage
-        if (!data.is_configured) {
-            try {
-                const cached = localStorage.getItem('it_signer_github_sync');
-                if (cached) {
-                    const parsed = JSON.parse(cached);
-                    if (parsed.github_branch === 'main') {
-                        parsed.github_branch = 'data';
-                        localStorage.setItem('it_signer_github_sync', JSON.stringify(parsed));
-                    }
-                    if (parsed.github_repo && parsed.github_token) {
-                        console.log('Restoring GitHub credentials from browser storage...');
-                        const restoreRes = await fetch('/api/config', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(parsed)
-                        });
-                        const restoreData = await restoreRes.json();
-                        if (restoreData.success) {
-                            res = await fetch('/api/github/status');
-                            data = await restoreData.config || (await res.json());
-                            await fetch('/api/github/sync-now', { method: 'POST' }).catch(() => {});
-                            await refreshDocuments();
-                        }
-                    }
-                }
-            } catch (syncErr) {
-                console.warn('Could not restore GitHub config from localStorage:', syncErr);
-            }
-        }
+        const res = await fetch('/api/github/status');
+        const data = await res.json();
+        if (data.hidden) return;
 
         gitHubConfig = data;
 
@@ -993,13 +934,6 @@ async function checkGitHubStatus() {
                 const sData = await sRes.json();
                 if (pData.success && Array.isArray(pData.files)) gitHubPendingFiles = pData.files;
                 if (sData.success && Array.isArray(sData.files)) gitHubSignedFiles = sData.files;
-
-                // Auto-sync if GitHub has pending files that are not yet visible in main grid
-                if (gitHubPendingFiles.length > 0 && pendingFiles.length === 0) {
-                    console.log('Auto-syncing missing pending files from GitHub...');
-                    await fetch('/api/github/sync-now', { method: 'POST' }).catch(() => {});
-                    await refreshDocuments();
-                }
             } catch (e) {
                 console.warn('Error updating GitHub lists:', e);
             }
@@ -1015,9 +949,9 @@ async function checkGitHubStatus() {
             if (tsBadge) tsBadge.textContent = gitHubSignedFiles.length;
         } else {
             const pBadge = document.getElementById('ghPendingCountBadge');
-            if (pBadge) pBadge.textContent = 'Not setup';
+            if (pBadge) pBadge.textContent = '0';
             const sBadge = document.getElementById('ghSignedCountBadge');
-            if (sBadge) sBadge.textContent = 'Not setup';
+            if (sBadge) sBadge.textContent = '0';
         }
     } catch (err) {
         console.error('Error checking GitHub status:', err);
@@ -1025,6 +959,7 @@ async function checkGitHubStatus() {
 }
 
 function openGitHubManagerModal(folder = 'pending') {
+    if (!window.isAdminUser) return;
     const modal = document.getElementById('githubModal');
     if (!modal) return;
     modal.classList.remove('hidden');
@@ -1067,6 +1002,7 @@ function switchGitHubTab(folder) {
 }
 
 async function refreshCurrentGitHubFolder() {
+    if (!window.isAdminUser) return;
     const container = document.getElementById('ghFileListContainer');
     const statusDot = document.getElementById('ghStatusDot');
     const statusText = document.getElementById('ghStatusText');
@@ -1211,9 +1147,7 @@ async function deleteGitHubFile(folder, filename) {
             refreshDocuments();
             checkGitHubStatus();
         } else {
-            const rawErr = data.error || 'Unknown error';
-            const displayErr = rawErr.startsWith('Failed to delete') ? rawErr : `Failed to delete from GitHub: ${rawErr}`;
-            alert(displayErr);
+            alert(data.error || 'Failed to delete from GitHub');
         }
     } catch (err) {
         alert(`Error: ${err.message}`);
@@ -1230,7 +1164,7 @@ async function clearAllCurrentGitHubFolder() {
         const res = await fetch(`/api/github/clear-${fType}`, { method: 'POST' });
         const data = await res.json();
         if (data.success) {
-            alert(data.message);
+            showToast(data.message);
             refreshCurrentGitHubFolder();
             refreshDocuments();
             checkGitHubStatus();
@@ -1363,7 +1297,7 @@ function updateAutoSaveUI(folderName, isGranted = true) {
     if (folderName && isGranted) {
         if (label) label.textContent = `Auto-Save: ${folderName}`;
         if (btn) {
-            btn.className = 'px-3 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 shadow-sm';
+            btn.className = 'px-3 py-2 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 shadow-sm';
         }
         if (icon) icon.className = 'w-3.5 h-3.5 text-emerald-400';
         if (currBox) currBox.classList.remove('hidden');
@@ -1373,7 +1307,7 @@ function updateAutoSaveUI(folderName, isGranted = true) {
     } else if (folderName && !isGranted) {
         if (label) label.textContent = `Auto-Save: ${folderName} (Click to authorize)`;
         if (btn) {
-            btn.className = 'px-3 py-1.5 bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/40 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 shadow-sm';
+            btn.className = 'px-3 py-2 bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/40 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 shadow-sm';
         }
         if (icon) icon.className = 'w-3.5 h-3.5 text-amber-400';
         if (currBox) currBox.classList.remove('hidden');
@@ -1383,7 +1317,7 @@ function updateAutoSaveUI(folderName, isGranted = true) {
     } else {
         if (label) label.textContent = 'Auto-Save to PC Folder';
         if (btn) {
-            btn.className = 'px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 shadow-sm';
+            btn.className = 'px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 rounded-xl text-xs font-semibold transition flex items-center gap-1.5 shadow-sm';
         }
         if (icon) icon.className = 'w-3.5 h-3.5 text-sky-400';
         if (currBox) currBox.classList.add('hidden');
@@ -1484,7 +1418,7 @@ function showToast(message) {
     setTimeout(() => {
         toast.classList.remove('translate-y-0', 'opacity-100');
         toast.classList.add('translate-y-12', 'opacity-0');
-    }, 4000);
+    }, 3500);
 }
 
 async function testGitHubConnectionFromSettings() {
@@ -1533,10 +1467,10 @@ async function testGitHubConnectionFromSettings() {
 function setOneDrivePreset() {
     const pendingInput = document.getElementById('setting_pending_dir');
     const signedInput = document.getElementById('setting_signed_dir');
-    const username = window.currentUsername || '';
+    const username = window.currentUsername || 'default';
 
     const oneDriveSigned = `$HOME\\OneDrive - Nokian Tyres\\Signed Handover Documents`;
-    const defaultPending = username ? `pending/${username}` : `pending`;
+    const defaultPending = `pending/${username}`;
 
     if (signedInput) {
         signedInput.value = oneDriveSigned;
@@ -1547,7 +1481,7 @@ function setOneDrivePreset() {
 }
 
 async function regeneratePersonalToken() {
-    if (!confirm('Are you sure you want to regenerate your Quick-Access / API Token? Any existing mobile shortcuts or sync scripts using your old token will need to be updated with the new token.')) {
+    if (!confirm('Are you sure you want to regenerate your Quick-Access / API Token? Any existing mobile shortcuts using your old token will need to be updated.')) {
         return;
     }
     try {
@@ -1556,12 +1490,10 @@ async function regeneratePersonalToken() {
         if (data.success && data.token) {
             window.currentUserToken = data.token;
             const tokenInput = document.getElementById('setting_user_token');
-            const syncInput = document.getElementById('setting_sync_command');
             if (tokenInput) tokenInput.value = data.token;
-            if (syncInput) syncInput.value = `powershell -ExecutionPolicy Bypass -File .\\sync_signed_to_pc.ps1 -Token "${data.token}"`;
             updateHeroQr();
             renderPendingGrid(pendingFiles);
-            alert('New token generated successfully! Your desktop QR code and sync commands have been updated.');
+            showToast('New personal access token generated!');
         } else {
             alert('Failed to regenerate token: ' + (data.error || 'Unknown error'));
         }
@@ -1574,16 +1506,7 @@ function copyPersonalToken() {
     const input = document.getElementById('setting_user_token');
     if (input) {
         navigator.clipboard.writeText(input.value).then(() => {
-            alert('Personal access token copied to clipboard!');
-        });
-    }
-}
-
-function copySyncCommand() {
-    const input = document.getElementById('setting_sync_command');
-    if (input) {
-        navigator.clipboard.writeText(input.value).then(() => {
-            alert('PowerShell sync command copied to clipboard!');
+            showToast('Personal access token copied!');
         });
     }
 }
